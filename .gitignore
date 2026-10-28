@@ -1,0 +1,35 @@
+# ---- 編譯產物（由 build.sh / build.bat 產生，不進版控）----
+build/
+*.class
+SecNewsMonitor.jar
+*.zip
+
+# ---- 隨程式資料夾放置的 JDK（第三方二進位檔，約 200 MB）----
+jdk/
+jdk-*/
+jre/
+
+# ---- 執行期資料：含密碼雜湊與加密的 Google Chat Webhook，絕對不可提交 ----
+# 正式位置在 %APPDATA%\SecNewsMonitor 或 ~/Library/Application Support/SecNewsMonitor，
+# 這裡是防止有人把資料夾複製進專案時誤提交。
+config.properties
+config.properties.bak
+seen.txt
+sites.tsv
+keywords.txt
+logs/
+*.log
+.lock
+
+# ---- 作業系統／IDE ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+out/
+bin/

@@ -1,0 +1,36 @@
+# SecNewsMonitor systemd 服務範例（Linux 伺服器，無圖形介面）
+# 安裝步驟見 README「Linux」一節。
+[Unit]
+Description=SecNewsMonitor 資安新聞監控
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=secnews
+Group=secnews
+WorkingDirectory=/opt/SecNewsMonitor
+Environment=SECNEWS_HOME=/var/lib/secnewsmonitor
+
+# 登入密碼：systemd credential（systemd 250 以上）。檔案 owner root、權限 600，服務帳號本身讀不到原檔。
+LoadCredential=secnews-password:/etc/secnewsmonitor/password
+# systemd 較舊時改用下一行（檔案需服務帳號可讀、權限 600），並把上一行註解掉：
+# Environment=SECNEWS_PASSWORD_FILE=/etc/secnewsmonitor/password
+
+ExecStart=/opt/SecNewsMonitor/run-linux.sh --headless
+Restart=on-failure
+RestartSec=60
+# JVM 收到 SIGTERM 正常結束時的結束代碼
+SuccessExitStatus=143
+
+# 安全強化
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+StateDirectory=secnewsmonitor
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/secnewsmonitor
+
+[Install]
+WantedBy=multi-user.target

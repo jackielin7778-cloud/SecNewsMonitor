@@ -1,0 +1,18 @@
+[新聞] BleepingComputer	https://www.bleepingcomputer.com/feed/	RSS	true	false
+[新聞] The Hacker News	https://feeds.feedburner.com/TheHackersNews	RSS	true	false
+[新聞] SecurityWeek	https://www.securityweek.com/feed/	RSS	true	false
+[新聞] Dark Reading	https://www.darkreading.com/rss.xml	RSS	true	false
+[新聞] Krebs on Security	https://krebsonsecurity.com/feed/	RSS	true	false
+[新聞] The Record	https://therecord.media/feed	RSS	true	false
+[新聞] Help Net Security	https://www.helpnetsecurity.com/feed/	RSS	true	false
+[新聞] Security Affairs	https://securityaffairs.com/feed	RSS	false	false
+[新聞] Infosecurity Magazine	https://www.infosecurity-magazine.com/rss/news/	RSS	false	false
+[官方] CISA 全部資安公告	https://www.cisa.gov/cybersecurity-advisories/all.xml	RSS	true	false
+[官方] CISA Alerts (含 KEV 新增通知)	https://www.cisa.gov/cybersecurity-advisories/alerts.xml	RSS	true	false
+[原廠] Oracle Security Alerts (Java)	https://www.oracle.com/ocom/groups/public/@otn/documents/webcontent/rss-otn-sec.xml	RSS	true	false
+[原廠] Microsoft Security Update Guide	https://api.msrc.microsoft.com/update-guide/rss	RSS	true	false
+[研究] SANS Internet Storm Center	https://isc.sans.edu/rssfeed.xml	RSS	true	false
+[研究] CERT/CC Vulnerability Notes	https://www.kb.cert.org/vuls/atomfeed/	RSS	false	false
+[研究] Cisco Talos	https://blog.talosintelligence.com/rss/	RSS	false	false
+[研究] Unit 42 (Palo Alto)	https://unit42.paloaltonetworks.com/feed/	RSS	false	false
+[CVE] cvefeed.io High+Critical	https://cvefeed.io/rssfeed/severity/high.xml	RSS	false	false

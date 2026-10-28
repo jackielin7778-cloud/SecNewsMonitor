@@ -1,0 +1,18 @@
+# 統一換行字元，避免 Windows／macOS 交替提交時整檔被標記為修改
+* text=auto
+
+# Windows 批次檔必須是 CRLF，否則 cmd 可能解析錯誤
+*.bat     text eol=crlf
+
+# macOS／Linux 腳本必須是 LF，否則會出現 "bad interpreter" 錯誤
+*.sh      text eol=lf
+*.command text eol=lf
+
+*.java    text eol=lf
+*.md      text eol=lf
+*.tsv     text eol=lf
+
+*.jar     binary
+*.zip     binary
+*.png     binary
+*.service text eol=lf
