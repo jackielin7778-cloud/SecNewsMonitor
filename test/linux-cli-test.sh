@@ -46,15 +46,17 @@ check "setup rc0" '[ $rc -eq 0 ]'
 check "setup rejects weak pw" '[[ "$out" == *"至少 8 碼"* ]]'
 check "setup saved webhook" '[[ "$out" == *"Webhook 已加密儲存"* ]]'
 check "data dir 700" '[ "$(stat -c %a "$SECNEWS_HOME")" = "700" ]'
-check "webhook not plain" '! grep -q "token=t" "$SECNEWS_HOME/config.properties"'
+check "webhook not plain" '! grep -rq "token=t" "$SECNEWS_HOME"'
 out=$(printf 'x\n' | run --setup); rc=$?; check "setup twice rc1" '[ $rc -eq 1 ] && [[ "$out" == *"--reset"* ]]'
 
 out=$(run --status); check "status after setup" '[[ "$out" == *"ops"* ]] && [[ "$out" == *"已設定"* ]] && [[ "$out" == *"未執行"* ]]'
 
 # 測試用設定：只有本機 RSS、關鍵字 Tomcat、關閉推播（測試環境無法連 Google）
-printf '# name\turl\ttype\tenabled\tfullText\nLocal\thttp://127.0.0.1:%s/feed.xml\tRSS\ttrue\tfalse\n' "$PORT" > "$SECNEWS_HOME/sites.tsv"
-printf 'Tomcat\n' > "$SECNEWS_HOME/keywords.txt"
-sed -i 's/^chat.enabled=.*//' "$SECNEWS_HOME/config.properties"; echo 'chat.enabled=false' >> "$SECNEWS_HOME/config.properties"
+C1="$SECNEWS_HOME/channels/c1"
+check "default channel dir" '[ -f "$C1/sites.tsv" ] && [ -f "$C1/channel.properties" ]'
+printf '# name\turl\ttype\tenabled\tfullText\nLocal\thttp://127.0.0.1:%s/feed.xml\tRSS\ttrue\tfalse\n' "$PORT" > "$C1/sites.tsv"
+printf 'Tomcat\n' > "$C1/keywords.txt"
+sed -i 's/^chat.enabled=.*//' "$C1/channel.properties"; echo 'chat.enabled=false' >> "$C1/channel.properties"
 
 # 5. 密碼來源
 out=$(SECNEWS_PASSWORD=wrong123 run --run-once); rc=$?; check "wrong password rc1" '[ $rc -eq 1 ] && [[ "$out" == *"密碼錯誤"* ]]'
@@ -76,6 +78,25 @@ mkdir -p "$WORK/cred"; cp "$WORK/pw" "$WORK/cred/secnews-password"
 out=$(CREDENTIALS_DIRECTORY="$WORK/cred" run --run-once); rc=$?
 check "systemd credential, no dup" '[ $rc -eq 0 ] && [[ "$out" == *"命中 0 則"* ]]'
 out=$(printf '%s\n' "$PW" | run --run-once); rc=$?; check "password from stdin" '[ $rc -eq 0 ]'
+
+# 5b. 多頻道
+out=$(run --add-channel "AI 新聞"); rc=$?; check "add-channel" '[ $rc -eq 0 ] && [[ "$out" == *"c2"* ]]'
+out=$(run --add-channel "ai 新聞"); rc=$?; check "add-channel duplicate rc1" '[ $rc -eq 1 ]'
+C2="$SECNEWS_HOME/channels/c2"
+printf 'Local\thttp://127.0.0.1:%s/feed.xml\tRSS\ttrue\tfalse\n' "$PORT" > "$C2/sites.tsv"
+printf '更新\n' > "$C2/keywords.txt"
+printf 'chat.enabled=false\nschedule.baselineFirstRun=false\n' >> "$C2/channel.properties"
+out=$(SECNEWS_PASSWORD=$PW run --run-once --channel "AI 新聞"); rc=$?
+check "run-once one channel" '[ $rc -eq 0 ] && [[ "$out" == *"[AI 新聞]"* ]] && [[ "$out" == *"Tomcat 9 緊急更新"* ]] && [[ "$out" != *"[資安新聞]"* ]]'
+out=$(SECNEWS_PASSWORD=$PW run --run-once); rc=$?
+check "run-once all channels" '[ $rc -eq 0 ] && [[ "$out" == *"[AI 新聞] 監控結束"* ]] && [[ "$out" == *"[資安新聞] 監控結束"* ]]'
+out=$(SECNEWS_PASSWORD=$PW run --run-once --channel nope); rc=$?; check "unknown channel rc2" '[ $rc -eq 2 ] && [[ "$out" == *"c2"* ]]'
+out=$(printf '%s\n' "$HOOK" | SECNEWS_PASSWORD=$PW run --set-webhook --channel c2); rc=$?
+check "set-webhook per channel" '[ $rc -eq 0 ] && [[ "$out" == *"AI 新聞"* ]]'
+out=$(run --status); check "status lists channels" '[[ "$out" == *"頻道「資安新聞」"* ]] && [[ "$out" == *"頻道「AI 新聞」"* ]] && [[ "$out" == *"頻道數        ：2"* ]]'
+out=$(run --delete-channel "AI 新聞"); rc=$?; check "delete needs --yes" '[ $rc -eq 1 ] && [ -d "$C2" ]'
+out=$(run --delete-channel "AI 新聞" --yes); rc=$?; check "delete-channel" '[ $rc -eq 0 ] && [ ! -d "$C2" ]'
+out=$(run --delete-channel "資安新聞" --yes); rc=$?; check "cannot delete last channel" '[ $rc -eq 1 ]'
 
 # 6. --headless 常駐、鎖、停止訊號
 SECNEWS_PASSWORD_FILE="$WORK/pw" "$RUN" --headless > "$WORK/daemon.log" 2>&1 &

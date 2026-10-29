@@ -16,6 +16,10 @@ public final class MonitorService {
     private final Fetcher fetcher;
     private final GoogleChatClient chat = new GoogleChatClient();
 
+    /** 推播方式（測試時可替換成本機假伺服器）。 */
+    interface Sender { void send(String webhookUrl, String text) throws Exception; }
+    Sender sender = chat::send;
+
     public MonitorService(Store store) { this(store, new Fetcher()); }
 
     MonitorService(Store store, Fetcher fetcher) {
@@ -33,24 +37,39 @@ public final class MonitorService {
         }
     }
 
-    /** 執行一次監控，回傳命中的文章（供測試使用）。 */
+    /** 執行第一個頻道一次（相容舊版與測試用）。 */
     public List<Hit> runOnce(String trigger) {
+        return runChannel(store.primary(), trigger);
+    }
+
+    /** 依序執行所有啟用中的頻道（命令列 --run-once 用）。 */
+    public void runAll(String trigger) {
+        for (Channel c : store.channels()) {
+            if (c.isEnabled()) runChannel(c, trigger);
+            else AppLog.info("[" + c.getName() + "] 頻道已停用，略過");
+            if (Thread.currentThread().isInterrupted()) return;
+        }
+    }
+
+    /** 執行一個頻道一次，回傳命中的文章。 */
+    public List<Hit> runChannel(Channel ch, String trigger) {
+        final String tag = "[" + ch.getName() + "] ";
         long start = System.currentTimeMillis();
-        AppLog.info("開始監控（" + trigger + "）");
+        AppLog.info(tag + "開始監控（" + trigger + "）");
         List<Site> sites;
         KeywordMatcher matcher;
         try {
-            sites = store.loadSites();
-            matcher = new KeywordMatcher(store.loadKeywords());
+            sites = ch.loadSites();
+            matcher = new KeywordMatcher(ch.loadKeywords());
         } catch (Exception e) {
-            AppLog.error("讀取設定失敗", e);
+            AppLog.error(tag + "讀取設定失敗", e);
             return List.of();
         }
         if (matcher.isEmpty()) {
-            AppLog.info("沒有設定任何關鍵字，略過本次監控");
+            AppLog.info(tag + "沒有設定任何關鍵字，略過本次監控");
             return List.of();
         }
-        ScheduleConfig cfg = store.getSchedule();
+        ScheduleConfig cfg = ch.getSchedule();
         boolean baseline = cfg.baselineFirstRun;
         java.time.Instant cutoff = cfg.maxAgeDays > 0
                 ? java.time.Instant.now().minus(java.time.Duration.ofDays(cfg.maxAgeDays)) : null;
@@ -65,25 +84,25 @@ public final class MonitorService {
                 List<FeedItem> items = fetcher.fetch(site);
                 List<String> currentKeys = new ArrayList<>(items.size());
                 for (FeedItem it : items) currentKeys.add(it.key());
-                boolean firstTime = !store.hasSeenAnyFrom(site.name);
+                boolean firstTime = !ch.hasSeenAnyFrom(site.name);
                 if (firstTime && baseline) {
-                    for (FeedItem it : items) if (!it.title.isEmpty()) store.markSeen(site.name, it.key());
-                    store.markSiteBaselined(site.name);
-                    store.retainSeen(site.name, currentKeys);
+                    for (FeedItem it : items) if (!it.title.isEmpty()) ch.markSeen(site.name, it.key());
+                    ch.markSiteBaselined(site.name);
+                    ch.retainSeen(site.name, currentKeys);
                     ok++;
                     fetched.add(site.name);
-                    AppLog.info("  ✓ " + site.name + "：" + items.size() + " 則（首次執行，已建立基準）");
+                    AppLog.info(tag + "  ✓ " + site.name + "：" + items.size() + " 則（首次執行，已建立基準）");
                     continue;
                 }
                 int titleHits = 0, fullHits = 0, fullFetched = 0, fullFailed = 0, deferred = 0, tooOld = 0;
                 for (FeedItem it : items) {
                     if (it.title.isEmpty()) continue;
-                    if (store.isSeen(site.name, it.key())) {
-                        store.markSeen(site.name, it.key());   // 舊格式紀錄轉移到此網站
+                    if (ch.isSeen(site.name, it.key())) {
+                        ch.markSeen(site.name, it.key());   // 舊格式紀錄轉移到此網站
                         continue;
                     }
                     if (cutoff != null && it.published != null && it.published.isBefore(cutoff)) {
-                        store.markSeen(site.name, it.key());   // 太舊：不比對、不抓內文
+                        ch.markSeen(site.name, it.key());   // 太舊：不比對、不抓內文
                         tooOld++;
                         continue;
                     }
@@ -91,11 +110,11 @@ public final class MonitorService {
                     if (!kw.isEmpty()) {
                         hits.add(new Hit(it, kw, ""));
                         titleHits++;
-                        store.markSeen(site.name, it.key());
+                        ch.markSeen(site.name, it.key());
                         continue;
                     }
                     if (!site.fullText || it.link.isEmpty()) {
-                        store.markSeen(site.name, it.key());
+                        ch.markSeen(site.name, it.key());
                         continue;
                     }
                     if (fullFetched >= MAX_FULLTEXT_PER_SITE) {
@@ -114,10 +133,10 @@ public final class MonitorService {
                     } catch (Exception e) {
                         fullFailed++;
                     }
-                    store.markSeen(site.name, it.key());
+                    ch.markSeen(site.name, it.key());
                 }
-                store.markSiteBaselined(site.name);
-                store.retainSeen(site.name, currentKeys);
+                ch.markSiteBaselined(site.name);
+                ch.retainSeen(site.name, currentKeys);
                 ok++;
                 fetched.add(site.name);
                 StringBuilder msg = new StringBuilder("  ✓ " + site.name + "：" + items.size() + " 則，標題命中 " + titleHits + " 則");
@@ -127,53 +146,59 @@ public final class MonitorService {
                     if (deferred > 0) msg.append("、").append(deferred).append(" 篇留待下次");
                 }
                 if (tooOld > 0) msg.append("；略過超過 ").append(cfg.maxAgeDays).append(" 天的舊文章 ").append(tooOld).append(" 則");
-                AppLog.info(msg.toString());
+                AppLog.info(tag + msg.toString());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                AppLog.info("監控被中斷");
+                AppLog.info(tag + "監控被中斷");
                 interrupted = true;
                 break;
             } catch (Exception e) {
                 fail++;
-                AppLog.error("  ✗ " + site.name, e);
+                AppLog.error(tag + "  ✗ " + site.name, e);
             }
         }
 
-        if (!hits.isEmpty()) notifyChat(hits);
+        if (!hits.isEmpty()) notifyChat(ch, hits);
         List<String> allNames = new ArrayList<>();
         for (Site s : sites) allNames.add(s.name);
-        store.pruneSeenSites(allNames);
-        if (store.hasLegacySeen() && fail == 0 && !interrupted) {
+        ch.pruneSeenSites(allNames);
+        if (ch.hasLegacySeen() && fail == 0 && !interrupted) {
             List<String> notFetched = new ArrayList<>();
             for (Site s : sites) if (!fetched.contains(s.name)) notFetched.add(s.name);
-            store.dropLegacySeen(notFetched);
-            AppLog.info("已讀紀錄已轉換為新格式（每個網站分開保存）");
+            ch.dropLegacySeen(notFetched);
+            AppLog.info(tag + "已讀紀錄已轉換為新格式（每個網站分開保存）");
         }
-        try { store.flushSeen(); } catch (Exception e) { AppLog.error("儲存已讀紀錄失敗", e); }
-        AppLog.info(String.format("監控結束：成功 %d 個網站、失敗 %d 個、命中 %d 則，耗時 %.1f 秒",
+        try { ch.flushSeen(); } catch (Exception e) { AppLog.error(tag + "儲存已讀紀錄失敗", e); }
+        AppLog.info(tag + String.format("監控結束：成功 %d 個網站、失敗 %d 個、命中 %d 則，耗時 %.1f 秒",
                 ok, fail, hits.size(), (System.currentTimeMillis() - start) / 1000.0));
         return hits;
     }
 
-    private void notifyChat(List<Hit> hits) {
-        int max = store.getMaxPushPerRun();
+    private void notifyChat(Channel ch, List<Hit> hits) {
+        String tag = "[" + ch.getName() + "] ";
+        int max = ch.getMaxPushPerRun();
         List<Hit> pushed = hits.size() > max ? hits.subList(0, max) : hits;
         List<Hit> rest = hits.size() > max ? hits.subList(max, hits.size()) : List.of();
-        String text = format(pushed, rest.size());
+        String text = format(ch.getName(), pushed, rest.size());
 
-        if (!store.isChatEnabled()) {
-            AppLog.info("Google Chat 推播已關閉，命中文章如下：");
+        if (!ch.isChatEnabled()) {
+            AppLog.info(tag + "Google Chat 推播已關閉，命中文章如下：");
+            logTitles(hits);
+            return;
+        }
+        if (!ch.hasWebhook()) {
+            AppLog.info(tag + "[警告] 此頻道尚未設定 Google Chat Webhook，命中文章如下：");
             logTitles(hits);
             return;
         }
         try {
-            chat.send(store.getWebhookUrl(), text);
-            AppLog.info("已推播 " + pushed.size() + " 則到 Google Chat"
+            sender.send(ch.getWebhookUrl(), text);
+            AppLog.info(tag + "已推播 " + pushed.size() + " 則到 Google Chat"
                     + (rest.isEmpty() ? "" : "（另有 " + rest.size() + " 則超過單次上限 " + max + " 則，只記錄在下方）"));
             if (!rest.isEmpty()) logTitles(rest);
         } catch (Exception e) {
-            AppLog.error("推播到 Google Chat 失敗", e);
-            AppLog.info("未推播的命中文章如下：");
+            AppLog.error(tag + "推播到 Google Chat 失敗", e);
+            AppLog.info(tag + "未推播的命中文章如下：");
             logTitles(hits);
         }
     }
@@ -186,8 +211,12 @@ public final class MonitorService {
     }
 
     static String format(List<Hit> hits, int omitted) {
+        return format(Store.DEFAULT_CHANNEL_NAME, hits, omitted);
+    }
+
+    static String format(String channelName, List<Hit> hits, int omitted) {
         StringBuilder sb = new StringBuilder();
-        sb.append("🔔 *資安新聞監控* ")
+        sb.append("🔔 *").append(channelName.replace('*', '＊')).append("* ")
           .append(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")))
           .append("｜共 ").append(hits.size() + omitted).append(" 則");
         if (omitted > 0) sb.append("（以下列出 ").append(hits.size()).append(" 則）");
@@ -208,7 +237,12 @@ public final class MonitorService {
     }
 
     public void sendTest(String webhookUrl) throws Exception {
-        chat.send(webhookUrl, "✅ SecNewsMonitor 測試訊息：Google Chat 串接成功。");
+        sendTest(webhookUrl, null);
+    }
+
+    public void sendTest(String webhookUrl, String channelName) throws Exception {
+        chat.send(webhookUrl, "✅ SecNewsMonitor 測試訊息：Google Chat 串接成功。"
+                + (channelName == null ? "" : "\n頻道：" + channelName));
     }
 
     public List<FeedItem> testSite(Site s) throws Exception {

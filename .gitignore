@@ -20,6 +20,9 @@ keywords.txt
 logs/
 *.log
 .lock
+channels/
+channel.properties
+backup-before-1.5/
 
 # ---- 作業系統／IDE ----
 .DS_Store

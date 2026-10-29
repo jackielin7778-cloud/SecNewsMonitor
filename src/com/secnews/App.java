@@ -37,14 +37,15 @@ public final class App {
             System.setProperty("apple.laf.useScreenMenuBar", "true");
         }
 
-        Store store = new Store();
-        AppLog.init(store.logsDir(), store::getLogRetentionDays);
-
-        // 單一執行個體：避免開兩個程式造成重複推播
-        if (!acquireLock(store)) {
-            JOptionPane.showMessageDialog(null, "資安新聞監控已經在執行中。", "SecNewsMonitor", JOptionPane.INFORMATION_MESSAGE);
+        // 單一執行個體：避免開兩個程式造成重複推播。
+        // 先取得鎖再讀取資料（v1.5 升級時會搬移設定檔，不可在舊版仍執行時進行）。
+        if (!acquireLock(Store.resolveDir())) {
+            JOptionPane.showMessageDialog(null, "資安新聞監控已經在執行中。\n（若剛升級版本，請先結束舊版程式，例如系統匣圖示 → Exit／結束）",
+                    "SecNewsMonitor", JOptionPane.INFORMATION_MESSAGE);
             System.exit(0);
         }
+        Store store = new Store();
+        AppLog.init(store.logsDir(), store::getLogRetentionDays);
 
         SwingUtilities.invokeAndWait(() -> {
             try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
@@ -64,6 +65,7 @@ public final class App {
 
         AppLog.info("程式啟動，版本 " + Cli.version() + "，資料夾：" + store.dir() + "，Java " + System.getProperty("java.version")
                 + "，" + System.getProperty("os.name"));
+        logMigration(store);
         MonitorService monitor = new MonitorService(store);
         SchedulerService scheduler = new SchedulerService(store, monitor);
 
@@ -75,10 +77,23 @@ public final class App {
         Runtime.getRuntime().addShutdownHook(new Thread(scheduler::shutdown));
     }
 
+    /** 由 v1.4 以前升級時，記錄轉移了哪些設定。 */
+    static void logMigration(Store store) {
+        java.util.List<String> m = store.migratedLegacy();
+        if (m.isEmpty()) return;
+        AppLog.info("已將舊版設定（" + String.join("、", m) + "）轉移到頻道「" + store.primary().getName()
+                + "」；原檔備份在 " + store.dir().resolve("backup-before-1.5"));
+    }
+
     /** 取得單一執行個體鎖；已有其他執行個體時回傳 false。 */
     static synchronized boolean acquireLock(Store store) throws IOException {
+        return acquireLock(store.dir());
+    }
+
+    static synchronized boolean acquireLock(java.nio.file.Path dir) throws IOException {
         if (instanceLock != null) return true;
-        lockChannel = FileChannel.open(store.dir().resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        java.nio.file.Files.createDirectories(dir);
+        lockChannel = FileChannel.open(dir.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         instanceLock = lockChannel.tryLock();
         if (instanceLock == null) {
             lockChannel.close();

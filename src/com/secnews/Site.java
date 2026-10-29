@@ -28,12 +28,12 @@ public final class Site {
     }
 
     /** 以 Tab 分隔的一行文字，供 sites.tsv 儲存。 */
-    String toLine() {
+    public String toLine() {
         return clean(name) + "\t" + clean(url) + "\t" + type.name() + "\t" + enabled + "\t" + fullText;
     }
 
     /** 相容舊版（4 欄）與新版（5 欄）格式。 */
-    static Site fromLine(String line) {
+    public static Site fromLine(String line) {
         String[] p = line.split("\t", -1);
         if (p.length < 4) return null;
         Type t;

@@ -18,6 +18,9 @@ import java.util.Properties;
 
 /**
  * 本機資料儲存。全部是純文字檔，放在使用者自己的資料夾：
+ *   config.properties：帳號、紀錄保留天數、頻道順序
+ *   channels/頻道ID/：各頻道的網站、關鍵字、排程、Webhook、已讀紀錄（見 {@link Channel}）
+ *   logs/：執行紀錄
  *   macOS   : ~/Library/Application Support/SecNewsMonitor
  *   Windows : %APPDATA%\SecNewsMonitor
  *   其他    : ~/.secnewsmonitor
@@ -26,25 +29,20 @@ import java.util.Properties;
 public final class Store {
 
     private final Path dir;
-    private final Path configFile, sitesFile, keywordsFile, seenFile, logsDir;
+    private final Path configFile, channelsDir, logsDir;
     private Properties config = new Properties();
     private SecretKey sessionKey;              // 登入成功後才有，用來加解密 Webhook
-    private final java.util.Map<String, LinkedHashSet<String>> seenBySite = new java.util.LinkedHashMap<>();
-    private final LinkedHashSet<String> legacySeen = new LinkedHashSet<>();
+    private final List<Channel> channels = new ArrayList<>();
 
     public Store() throws IOException {
         this.dir = resolveDir();
         Files.createDirectories(dir);
         restrictPermissions(dir);
         configFile = dir.resolve("config.properties");
-        sitesFile = dir.resolve("sites.tsv");
-        keywordsFile = dir.resolve("keywords.txt");
-        seenFile = dir.resolve("seen.txt");
+        channelsDir = dir.resolve("channels");
         logsDir = dir.resolve("logs");
         loadConfig();
-        loadSeen();
-        if (!Files.exists(sitesFile)) saveSites(DefaultSites.list());
-        if (!Files.exists(keywordsFile)) saveKeywords(List.of("Java", "Tomcat", "OpenJDK"));
+        loadChannels();
         migrateLegacyLog();
     }
 
@@ -159,195 +157,175 @@ public final class Store {
                 .toList().forEach(config::remove);
         sessionKey = null;
         saveConfig();
+        for (Channel c : channels) c.clearWebhook();
     }
 
-    /** 變更密碼：重新雜湊，並用新金鑰重新加密 Webhook。 */
+    /** 變更密碼：重新雜湊，並用新金鑰重新加密每個頻道的 Webhook。 */
     public synchronized void changePassword(char[] newPassword) throws IOException {
-        String webhook = getWebhookUrl();
+        java.util.Map<Channel, String> hooks = new java.util.LinkedHashMap<>();
+        for (Channel c : channels) if (c.hasWebhook()) hooks.put(c, c.getWebhookUrl());
         createAccount(accountUser(), newPassword);
-        setWebhookUrl(webhook);
+        for (java.util.Map.Entry<Channel, String> e : hooks.entrySet()) e.getKey().setWebhookUrl(e.getValue());
     }
 
-    // ---------- Google Chat ----------
-    public synchronized String getWebhookUrl() {
-        if (sessionKey == null) return "";
-        return Crypto.decrypt(sessionKey, config.getProperty("chat.webhook.enc", ""));
+    // ---------- 頻道 ----------
+    public synchronized List<Channel> channels() { return new ArrayList<>(channels); }
+
+    /** 第一個頻道（升級前的設定會轉移到這裡）。 */
+    public synchronized Channel primary() { return channels.get(0); }
+
+    /** 依 ID 或名稱（不分大小寫）尋找頻道；找不到回傳 null。 */
+    public synchronized Channel channel(String idOrName) {
+        if (idOrName == null) return null;
+        for (Channel c : channels) if (c.id().equals(idOrName)) return c;
+        for (Channel c : channels) if (c.getName().equalsIgnoreCase(idOrName.trim())) return c;
+        return null;
     }
 
-    public synchronized void setWebhookUrl(String url) throws IOException {
-        if (sessionKey == null) throw new IllegalStateException("尚未登入");
-        config.setProperty("chat.webhook.enc", Crypto.encrypt(sessionKey, url == null ? "" : url.trim()));
+    public synchronized boolean channelNameExists(String name, Channel except) {
+        for (Channel c : channels) if (c != except && c.getName().equalsIgnoreCase(name.trim())) return true;
+        return false;
+    }
+
+    /** 新增頻道：網站與關鍵字空白，排程使用預設值（每 60 分鐘），推播啟用。 */
+    public synchronized Channel createChannel(String name) throws IOException {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("頻道名稱不可空白");
+        if (channelNameExists(name, null)) throw new IllegalArgumentException("頻道名稱已存在：" + name.trim());
+        int n = 1;
+        java.util.Set<String> used = new java.util.HashSet<>();
+        for (Channel c : channels) used.add(c.id());
+        while (used.contains("c" + n) || Files.exists(channelsDir.resolve("c" + n))) n++;
+        Channel c = new Channel(this, "c" + n, channelsDir.resolve("c" + n));
+        c.setName(name);
+        channels.add(c);
+        saveChannelOrder();
+        return c;
+    }
+
+    /** 刪除頻道（含網站、關鍵字、Webhook、已讀紀錄）。至少保留一個頻道。 */
+    public synchronized void deleteChannel(Channel c) throws IOException {
+        if (channels.size() <= 1) throw new IllegalStateException("至少要保留一個頻道");
+        if (!channels.remove(c)) return;
+        saveChannelOrder();
+        deleteRecursively(c.dir());
+    }
+
+    private static void deleteRecursively(Path p) throws IOException {
+        if (!Files.exists(p)) return;
+        try (java.util.stream.Stream<Path> w = Files.walk(p)) {
+            for (Path x : w.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(x);
+        }
+    }
+
+    private void saveChannelOrder() throws IOException {
+        List<String> ids = new ArrayList<>();
+        for (Channel c : channels) ids.add(c.id());
+        config.setProperty("channels", String.join(",", ids));
         saveConfig();
     }
 
-    /** 是否已設定 Webhook（不需登入即可判斷，不解密）。 */
-    public synchronized boolean hasWebhook() {
-        return !config.getProperty("chat.webhook.enc", "").isEmpty();
+    synchronized SecretKey sessionKey() { return sessionKey; }
+
+    /** 讀取頻道列表；第一次使用（或由舊版升級）時建立「資安新聞」頻道並轉移舊設定。 */
+    private void loadChannels() throws IOException {
+        Files.createDirectories(channelsDir);
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        for (String id : config.getProperty("channels", "").split(",")) {
+            if (!id.isBlank() && Files.isDirectory(channelsDir.resolve(id.trim()))) ids.add(id.trim());
+        }
+        try (java.util.stream.Stream<Path> l = Files.list(channelsDir)) {
+            l.filter(Files::isDirectory).map(x -> x.getFileName().toString()).sorted().forEach(ids::add);
+        }
+        for (String id : ids) channels.add(new Channel(this, id, channelsDir.resolve(id)));
+        boolean fresh = channels.isEmpty();
+        if (fresh) {
+            Channel c = new Channel(this, "c1", channelsDir.resolve("c1"));
+            c.setName(DEFAULT_CHANNEL_NAME);
+            if (!Files.exists(dir.resolve("sites.tsv"))) c.saveSites(DefaultSites.list());
+            if (!Files.exists(dir.resolve("keywords.txt"))) c.saveKeywords(List.of("Java", "Tomcat", "OpenJDK"));
+            channels.add(c);
+        }
+        migrateLegacy(channels.get(0));
+        String order = config.getProperty("channels", "");
+        List<String> cur = new ArrayList<>();
+        for (Channel c : channels) cur.add(c.id());
+        if (!order.equals(String.join(",", cur))) saveChannelOrder();
     }
 
-    public synchronized boolean isChatEnabled() {
-        return Boolean.parseBoolean(config.getProperty("chat.enabled", "true"));
+    public static final String DEFAULT_CHANNEL_NAME = "資安新聞";
+
+    /**
+     * v1.4 以前的單一設定（資料夾最上層的 sites.tsv、keywords.txt、seen.txt，
+     * 以及 config.properties 中的排程、Google Chat 設定）轉移到第一個頻道。
+     * 轉移前先把舊檔備份到 backup-before-1.5/。之後若有人依舊版說明把 sites.tsv 放回最上層，也會再匯入第一個頻道。
+     */
+    private void migrateLegacy(Channel target) throws IOException {
+        String[] files = {"sites.tsv", "keywords.txt", "seen.txt"};
+        List<String> legacyKeys = config.stringPropertyNames().stream()
+                .filter(k -> k.startsWith("schedule.") || k.startsWith("chat.") || k.startsWith("site.baseline."))
+                .sorted().toList();
+        boolean anyFile = false;
+        for (String f : files) anyFile |= Files.exists(dir.resolve(f));
+        if (!anyFile && legacyKeys.isEmpty()) return;
+
+        Path backup = dir.resolve("backup-before-1.5");
+        if (!Files.exists(backup)) {
+            Files.createDirectories(backup);
+            for (String f : files) {
+                if (Files.exists(dir.resolve(f))) Files.copy(dir.resolve(f), backup.resolve(f));
+            }
+            if (Files.exists(configFile)) Files.copy(configFile, backup.resolve("config.properties"));
+        }
+        for (String f : files) {
+            Path src = dir.resolve(f);
+            if (!Files.exists(src)) continue;
+            Path dst = target.dir().resolve(f);
+            move(src, dst);
+            migrated.add(f);
+        }
+        if (!legacyKeys.isEmpty()) {
+            Properties p = target.props();
+            for (String k : legacyKeys) {
+                p.setProperty(k, config.getProperty(k));
+                config.remove(k);
+            }
+            target.saveProps();
+            saveConfig();
+            migrated.add("config.properties（排程、Google Chat）");
+        }
+        target.reloadSeen();
     }
 
-    public synchronized void setChatEnabled(boolean b) throws IOException {
-        config.setProperty("chat.enabled", String.valueOf(b));
-        saveConfig();
-    }
+    private final List<String> migrated = new ArrayList<>();
 
+    /** 本次啟動轉移了哪些舊版設定（給啟動紀錄用）；沒有轉移回傳空列表。 */
+    public synchronized List<String> migratedLegacy() { return new ArrayList<>(migrated); }
+
+    // ---------- 相容用：以下都是「第一個頻道」的設定 ----------
+    public String getWebhookUrl() { return primary().getWebhookUrl(); }
+    public void setWebhookUrl(String url) throws IOException { primary().setWebhookUrl(url); }
+    public boolean hasWebhook() { return primary().hasWebhook(); }
+    public boolean isChatEnabled() { return primary().isChatEnabled(); }
+    public void setChatEnabled(boolean b) throws IOException { primary().setChatEnabled(b); }
     public static final int DEFAULT_MAX_PER_RUN = 20;
-
-    /** 單次執行最多推播幾則（超過的只記在執行紀錄）。 */
-    public synchronized int getMaxPushPerRun() {
-        try {
-            return Math.max(1, Integer.parseInt(config.getProperty("chat.maxPerRun", String.valueOf(DEFAULT_MAX_PER_RUN))));
-        } catch (NumberFormatException e) {
-            return DEFAULT_MAX_PER_RUN;
-        }
-    }
-
-    public synchronized void setMaxPushPerRun(int n) throws IOException {
-        config.setProperty("chat.maxPerRun", String.valueOf(Math.max(1, n)));
-        saveConfig();
-    }
-
-    // ---------- 排程 ----------
-    public synchronized ScheduleConfig getSchedule() {
-        return ScheduleConfig.load(config);
-    }
-
-    public synchronized void setSchedule(ScheduleConfig s) throws IOException {
-        s.save(config);
-        saveConfig();
-    }
-
-    // ---------- 網站 ----------
-    public synchronized List<Site> loadSites() throws IOException {
-        List<Site> list = new ArrayList<>();
-        for (String line : Files.readAllLines(sitesFile, StandardCharsets.UTF_8)) {
-            if (line.isBlank() || line.startsWith("#")) continue;
-            Site s = Site.fromLine(line);
-            if (s != null) list.add(s);
-        }
-        return list;
-    }
-
-    public synchronized void saveSites(List<Site> sites) throws IOException {
-        StringBuilder sb = new StringBuilder("# name\turl\ttype(RSS|HTML)\tenabled\tfullText\n");
-        for (Site s : sites) sb.append(s.toLine()).append('\n');
-        writeAtomic(sitesFile, sb.toString());
-    }
-
-    // ---------- 關鍵字 ----------
-    public synchronized List<String> loadKeywords() throws IOException {
-        List<String> list = new ArrayList<>();
-        for (String line : Files.readAllLines(keywordsFile, StandardCharsets.UTF_8)) {
-            String k = line.trim();
-            if (!k.isEmpty() && !list.contains(k)) list.add(k);
-        }
-        return list;
-    }
-
-    public synchronized void saveKeywords(List<String> keywords) throws IOException {
-        writeAtomic(keywordsFile, String.join("\n", keywords) + "\n");
-    }
-
-    // ---------- 已讀紀錄（去重） ----------
-    // v1.2 起每個網站分開保存（seen.txt 每行：網站名稱<TAB>鍵值）。
-    // 每次成功抓取後，只保留「目前 feed 裡還有的項目」＋最近 RECENT_EXTRA 筆，
-    // 因此總量只跟各網站 feed 大小有關，不會再因全域上限擠掉別的網站而重複推播。
+    public int getMaxPushPerRun() { return primary().getMaxPushPerRun(); }
+    public void setMaxPushPerRun(int n) throws IOException { primary().setMaxPushPerRun(n); }
+    public ScheduleConfig getSchedule() { return primary().getSchedule(); }
+    public void setSchedule(ScheduleConfig s) throws IOException { primary().setSchedule(s); }
+    public List<Site> loadSites() throws IOException { return primary().loadSites(); }
+    public void saveSites(List<Site> sites) throws IOException { primary().saveSites(sites); }
+    public List<String> loadKeywords() throws IOException { return primary().loadKeywords(); }
+    public void saveKeywords(List<String> k) throws IOException { primary().saveKeywords(k); }
     static final int RECENT_EXTRA = 2000;
-
-    private static String norm(String key) {
-        return key == null ? "" : key.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ');
-    }
-
-    public synchronized boolean isSeen(String site, String key) {
-        String k = norm(key);
-        LinkedHashSet<String> s = seenBySite.get(site);
-        return (s != null && s.contains(k)) || legacySeen.contains(k);
-    }
-
-    public synchronized void markSeen(String site, String key) {
-        String k = norm(key);
-        LinkedHashSet<String> s = seenBySite.computeIfAbsent(site, x -> new LinkedHashSet<>());
-        s.remove(k);
-        s.add(k);   // 移到最後 = 最近
-    }
-
-    /**
-     * 網站抓取成功後呼叫：保留目前 feed 中、已標記已讀的鍵值，
-     * 另外保留不在 feed 中但最近標記的 RECENT_EXTRA 筆（避免文章暫時從列表消失又出現時重複推播）。
-     */
-    public synchronized void retainSeen(String site, java.util.Collection<String> currentKeys) {
-        LinkedHashSet<String> s = seenBySite.get(site);
-        if (s == null) return;
-        java.util.Set<String> current = new java.util.HashSet<>();
-        for (String k : currentKeys) current.add(norm(k));
-        java.util.List<String> others = new java.util.ArrayList<>();
-        for (String k : s) if (!current.contains(k)) others.add(k);
-        int drop = Math.max(0, others.size() - RECENT_EXTRA);
-        for (int i = 0; i < drop; i++) s.remove(others.get(i));   // 最舊的在前面
-    }
-
-    /**
-     * 舊版（v1.1 以前）不分網站的已讀紀錄：所有啟用的網站都成功抓取過一次後即可丟棄。
-     * 停用中的網站沒有轉移到新格式，因此清掉它們的「已建立基準」標記，
-     * 重新啟用時會再建立一次基準，避免推播舊文章。
-     */
-    public synchronized void dropLegacySeen(java.util.Collection<String> notFetchedSites) {
-        legacySeen.clear();
-        for (String s : notFetchedSites) config.remove("site.baseline." + s);
-    }
-
-    public synchronized boolean hasLegacySeen() { return !legacySeen.isEmpty(); }
-
-    /** 刪除已不在網站列表中的網站的已讀紀錄（網站被刪除或改名時）。 */
-    public synchronized void pruneSeenSites(java.util.Collection<String> existingSiteNames) {
-        seenBySite.keySet().retainAll(new java.util.HashSet<>(existingSiteNames));
-    }
-
-    public synchronized int seenCount() {
-        int n = legacySeen.size();
-        for (LinkedHashSet<String> s : seenBySite.values()) n += s.size();
+    public boolean isSeen(String site, String key) { return primary().isSeen(site, key); }
+    public void markSeen(String site, String key) { primary().markSeen(site, key); }
+    public int seenCount() {
+        int n = 0;
+        for (Channel c : channels()) n += c.seenCount();
         return n;
     }
-
-    private void loadSeen() throws IOException {
-        if (!Files.exists(seenFile)) return;
-        for (String line : Files.readAllLines(seenFile, StandardCharsets.UTF_8)) {
-            if (line.isEmpty()) continue;
-            int tab = line.indexOf('\t');
-            if (tab < 0) legacySeen.add(line);       // 舊格式：只有鍵值
-            else seenBySite.computeIfAbsent(line.substring(0, tab), x -> new LinkedHashSet<>())
-                    .add(line.substring(tab + 1));
-        }
-    }
-
-    public synchronized boolean hasSeenAnyFrom(String siteName) {
-        return config.getProperty("site.baseline." + siteName) != null;
-    }
-
-    public synchronized void markSiteBaselined(String siteName) {
-        config.setProperty("site.baseline." + siteName, "1");
-    }
-
-    public synchronized void flushSeen() throws IOException {
-        StringBuilder sb = new StringBuilder();
-        for (String k : legacySeen) sb.append(k).append('\n');
-        for (java.util.Map.Entry<String, LinkedHashSet<String>> e : seenBySite.entrySet()) {
-            for (String k : e.getValue()) sb.append(e.getKey()).append('\t').append(k).append('\n');
-        }
-        writeAtomic(seenFile, sb.toString());
-        saveConfig();
-    }
-
-    public synchronized void clearSeen() throws IOException {
-        legacySeen.clear();
-        seenBySite.clear();
-        config.stringPropertyNames().stream().filter(k -> k.startsWith("site.baseline."))
-                .toList().forEach(config::remove);
-        flushSeen();
-    }
+    public void flushSeen() throws IOException { primary().flushSeen(); }
+    public void clearSeen() throws IOException { primary().clearSeen(); }
 
     // ---------- 共用 ----------
     private void loadConfig() throws IOException {
@@ -367,13 +345,13 @@ public final class Store {
         move(tmp, configFile);
     }
 
-    private static void writeAtomic(Path target, String content) throws IOException {
+    static void writeAtomic(Path target, String content) throws IOException {
         Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
         Files.writeString(tmp, content, StandardCharsets.UTF_8);
         move(tmp, target);
     }
 
-    private static void move(Path from, Path to) throws IOException {
+    static void move(Path from, Path to) throws IOException {
         try {
             Files.move(from, to, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {

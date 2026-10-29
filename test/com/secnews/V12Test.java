@@ -61,7 +61,7 @@ public class V12Test {
         ms.runOnce("r4");
         Store chk = new Store();
         int msCount = 0;
-        for (String l : Files.readAllLines(dir.resolve("seen.txt"))) if (l.startsWith("MSRC\t")) msCount++;
+        for (String l : Files.readAllLines(dir.resolve("channels/c1/seen.txt"))) if (l.startsWith("MSRC\t")) msCount++;
         check("MSRC kept current 100 + recent 2000 = 2100, got " + msCount, msCount == 2100);
         check("most recent dropped-out item still seen", chk.isSeen("MSRC", base + "/ms/5999"));
         check("old dropped-out item pruned", !chk.isSeen("MSRC", base + "/ms/0"));
@@ -83,13 +83,13 @@ public class V12Test {
         Files.writeString(dir2.resolve("config.properties"),
                 Files.readString(dir2.resolve("config.properties")) + "site.baseline.Oracle=1\nsite.baseline.Off=1\n");
         Store s2b = new Store();
-        check("legacy loaded", s2b.hasLegacySeen() && s2b.isSeen("Oracle", base + "/oracle/3") && s2b.isSeen("Anything", base + "/oracle/3"));
+        check("legacy loaded", s2b.primary().hasLegacySeen() && s2b.isSeen("Oracle", base + "/oracle/3") && s2b.isSeen("Anything", base + "/oracle/3"));
         List<MonitorService.Hit> lh = new MonitorService(s2b).runOnce("legacy");
         check("legacy items not re-pushed", lh.isEmpty());
-        check("legacy dropped", !s2b.hasLegacySeen());
-        List<String> lines = Files.readAllLines(dir2.resolve("seen.txt"));
+        check("legacy dropped", !s2b.primary().hasLegacySeen());
+        List<String> lines = Files.readAllLines(dir2.resolve("channels/c1/seen.txt"));
         check("new format written", lines.size() == 9 && lines.stream().allMatch(l -> l.startsWith("Oracle\t")));
-        check("disabled site baseline reset", !s2b.hasSeenAnyFrom("Off") && s2b.hasSeenAnyFrom("Oracle"));
+        check("disabled site baseline reset", !s2b.primary().hasSeenAnyFrom("Off") && s2b.primary().hasSeenAnyFrom("Oracle"));
         check("after migration still no dup", new MonitorService(new Store()).runOnce("legacy2").isEmpty());
 
         // ---------- 4. 日期過濾 ----------
@@ -144,7 +144,7 @@ public class V12Test {
         Store s5 = new Store();
         s5.saveSites(List.of(new Site("Oracle", base + "/f/oracle", Site.Type.RSS, true)));
         new MonitorService(s5).runOnce("prune");
-        check("deleted site MSRC pruned", Files.readAllLines(dir.resolve("seen.txt")).stream().noneMatch(l -> l.startsWith("MSRC\t")));
+        check("deleted site MSRC pruned", Files.readAllLines(dir.resolve("channels/c1/seen.txt")).stream().noneMatch(l -> l.startsWith("MSRC\t")));
 
         srv.stop(0);
         System.out.println("V12 PASS=" + pass + " FAIL=" + fail);

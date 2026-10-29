@@ -3,6 +3,7 @@ package com.secnews.ui;
 import com.secnews.AppLog;
 import com.secnews.GoogleChatClient;
 import com.secnews.MonitorService;
+import com.secnews.Channel;
 import com.secnews.Store;
 
 import javax.swing.*;
@@ -17,7 +18,7 @@ import java.nio.charset.StandardCharsets;
  * 儲存時以登入密碼推導的金鑰做 AES-GCM 加密，不會以明文存檔。
  */
 final class ChatPanel extends JPanel {
-    private final Store store;
+    private final Channel store;
     private final MonitorService monitor;
 
     private final JCheckBox enabled = new JCheckBox("啟用 Google Chat 推播");
@@ -30,7 +31,7 @@ final class ChatPanel extends JPanel {
     private final JCheckBox show = new JCheckBox("顯示內容");
     private final JSpinner maxPerRun = new JSpinner(new SpinnerNumberModel(Store.DEFAULT_MAX_PER_RUN, 1, 200, 5));
 
-    ChatPanel(Store store, MonitorService monitor) {
+    ChatPanel(Channel store, MonitorService monitor) {
         super(new BorderLayout(8, 8));
         this.store = store;
         this.monitor = monitor;
@@ -69,7 +70,7 @@ final class ChatPanel extends JPanel {
         c.gridx = 0; c.gridy = y; c.gridwidth = 2; c.insets = new Insets(14, 4, 4, 4);
         form.add(help, c);
 
-        add(UiUtil.titled("Google Chat 傳入 Webhook（Incoming Webhook）", form), BorderLayout.NORTH);
+        add(UiUtil.titled("頻道「" + store.getName() + "」的 Google Chat 傳入 Webhook（每個頻道可推到不同聊天室）", form), BorderLayout.NORTH);
 
         JPanel btns = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton save = new JButton("儲存");
@@ -155,7 +156,7 @@ final class ChatPanel extends JPanel {
             store.setMaxPushPerRun((Integer) maxPerRun.getValue());
             urlField.setText(url);
             fillParts(url);
-            AppLog.info("Google Chat 設定已儲存（" + (enabled.isSelected() ? "啟用" : "停用")
+            AppLog.info("[" + store.getName() + "] Google Chat 設定已儲存（" + (enabled.isSelected() ? "啟用" : "停用")
                     + "，單次最多推播 " + maxPerRun.getValue() + " 則）");
             JOptionPane.showMessageDialog(this, "已儲存（Webhook 已加密）");
         } catch (IllegalArgumentException e) {
@@ -176,12 +177,12 @@ final class ChatPanel extends JPanel {
         }
         setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
         new SwingWorker<Void, Void>() {
-            @Override protected Void doInBackground() throws Exception { monitor.sendTest(url); return null; }
+            @Override protected Void doInBackground() throws Exception { monitor.sendTest(url, store.getName()); return null; }
             @Override protected void done() {
                 setCursor(Cursor.getDefaultCursor());
                 try {
                     get();
-                    AppLog.info("Google Chat 測試訊息傳送成功");
+                    AppLog.info("[" + store.getName() + "] Google Chat 測試訊息傳送成功");
                     JOptionPane.showMessageDialog(ChatPanel.this, "測試訊息已送出，請到 Google Chat 確認");
                 } catch (Exception e) {
                     UiUtil.error(ChatPanel.this, "測試傳送失敗", e.getCause() != null ? e.getCause() : e);

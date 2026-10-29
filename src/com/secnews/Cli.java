@@ -25,7 +25,7 @@ import java.util.concurrent.CountDownLatch;
  *   → 環境變數 SECNEWS_PASSWORD → 終端機輸入
  */
 final class Cli {
-    enum Command { GUI, HELP, VERSION, STATUS, SETUP, SET_WEBHOOK, TEST_CHAT, RUN_ONCE, HEADLESS }
+    enum Command { GUI, HELP, VERSION, STATUS, SETUP, SET_WEBHOOK, TEST_CHAT, RUN_ONCE, HEADLESS, ADD_CHANNEL, DELETE_CHANNEL }
 
     private static final PrintStream OUT = new PrintStream(System.out, true, StandardCharsets.UTF_8);
     private static final PrintStream ERR = new PrintStream(System.err, true, StandardCharsets.UTF_8);
@@ -42,6 +42,8 @@ final class Cli {
             case "--test-chat" -> Command.TEST_CHAT;
             case "--run-once" -> Command.RUN_ONCE;
             case "--status" -> Command.STATUS;
+            case "--add-channel" -> Command.ADD_CHANNEL;
+            case "--delete-channel" -> Command.DELETE_CHANNEL;
             case "--version", "-v" -> Command.VERSION;
             case "--gui" -> Command.GUI;
             default -> Command.HELP;
@@ -70,21 +72,24 @@ final class Cli {
             default: break;
         }
 
-        Store store = new Store();
-        AppLog.init(store.logsDir(), store::getLogRetentionDays);
-        if (cmd == Command.STATUS) return status(store);
-
-        if (!App.acquireLock(store)) {
+        // 先取得鎖再讀取資料（v1.5 升級時會搬移設定檔，不可在其他執行個體執行中進行）
+        if (cmd != Command.STATUS && !App.acquireLock(Store.resolveDir())) {
             ERR.println("錯誤：SecNewsMonitor 已經在執行中（圖形介面或無介面模式）。");
             ERR.println("      請先停止它，例如：systemctl stop secnewsmonitor");
             return 3;
         }
+        Store store = new Store();
+        AppLog.init(store.logsDir(), store::getLogRetentionDays);
+        App.logMigration(store);
+        if (cmd == Command.STATUS) return status(store);
         return switch (cmd) {
             case SETUP -> setup(store, args);
             case SET_WEBHOOK -> setWebhook(store, args);
             case TEST_CHAT -> testChat(store, args);
             case RUN_ONCE -> runOnce(store, args);
             case HEADLESS -> headless(store, args);
+            case ADD_CHANNEL -> addChannel(store, args);
+            case DELETE_CHANNEL -> deleteChannel(store, args);
             default -> 2;
         };
     }
@@ -99,29 +104,31 @@ final class Cli {
                   run-linux.sh                  有圖形介面時開啟視窗（與 Windows／macOS 相同）
                   run-linux.sh --setup          建立管理員帳號並設定 Google Chat Webhook（第一次使用）
                   run-linux.sh --headless       無介面模式：常駐背景依排程執行（適合 systemd 服務）
-                  run-linux.sh --run-once       立即執行一次監控後結束
+                  run-linux.sh --run-once       立即執行一次監控後結束（全部啟用中的頻道）
                   run-linux.sh --set-webhook    變更 Google Chat Webhook
                   run-linux.sh --test-chat      傳送 Google Chat 測試訊息
-                  run-linux.sh --status         顯示目前設定（不需密碼）
+                  run-linux.sh --status         顯示目前設定與所有頻道（不需密碼）
+                  run-linux.sh --add-channel 名稱          新增頻道（之後編輯該頻道的 sites.tsv、keywords.txt，
+                                                           再用 --set-webhook --channel 名稱 設定推播聊天室）
+                  run-linux.sh --delete-channel 名稱 --yes 刪除頻道（含網站、關鍵字、Webhook、已讀紀錄）
                   run-linux.sh --version        顯示版本
 
                 選項：
                   --password-file 檔案          從檔案讀取登入密碼（檔案權限請設為 600）
-                  --reset                       與 --setup 併用：重設既有帳號（會清除 Webhook）
+                  --reset                       與 --setup 併用：重設既有帳號（會清除所有頻道的 Webhook）
+                  --channel 名稱或ID            指定頻道（--run-once、--set-webhook、--test-chat）；
+                                                未指定時：--run-once 執行全部頻道，其他指令使用第一個頻道
 
                 密碼來源（依序）：--password-file、環境變數 SECNEWS_PASSWORD_FILE、
                   systemd credential（$CREDENTIALS_DIRECTORY/secnews-password）、環境變數 SECNEWS_PASSWORD、終端機輸入。
 
                 資料夾：環境變數 SECNEWS_HOME，預設 ~/.secnewsmonitor（Linux）
-                網站列表 sites.tsv、關鍵字 keywords.txt 可直接用文字編輯器修改（請先停止程式）。
+                頻道：新增／刪除頻道請用圖形介面；各頻道的網站列表 channels/頻道ID/sites.tsv、
+                  關鍵字 channels/頻道ID/keywords.txt 可直接用文字編輯器修改（請先停止程式）。
                 """.formatted(version()));
     }
 
     private static int status(Store store) throws IOException {
-        ScheduleConfig sc = store.getSchedule();
-        ZonedDateTime next = sc.nextRun(ZonedDateTime.now());
-        List<Site> sites = store.loadSites();
-        long enabled = sites.stream().filter(s -> s.enabled).count();
         boolean running = !App.acquireLock(store);
         if (!running) App.releaseLock();
 
@@ -129,20 +136,83 @@ final class Cli {
         OUT.println("資料夾        ：" + store.dir());
         OUT.println("執行狀態      ：" + (running ? "執行中" : "未執行"));
         OUT.println("帳號          ：" + (store.hasAccount() ? store.accountUser() : "（尚未建立，請執行 --setup）"));
-        OUT.println("Google Chat   ：" + (store.hasWebhook() ? "已設定" : "未設定")
-                + "，推播" + (store.isChatEnabled() ? "啟用" : "停用") + "，單次最多 " + store.getMaxPushPerRun() + " 則");
-        OUT.println("排程          ：" + sc.describe()
-                + (next != null && sc.enabled ? "（若現在啟動，下次執行 " + next.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) + "）" : ""));
-        OUT.println("首次只建立基準：" + (sc.baselineFirstRun ? "是" : "否")
-                + "；只推播 " + (sc.maxAgeDays == 0 ? "不限天數" : sc.maxAgeDays + " 天內") + "的文章");
-        OUT.println("關鍵字        ：" + String.join(", ", store.loadKeywords()));
-        OUT.println("網站          ：啟用 " + enabled + " / 共 " + sites.size());
-        for (Site s : sites) {
-            OUT.println("  " + (s.enabled ? "[✓]" : "[ ]") + (s.fullText ? "[全文]" : "      ") + " " + s.name + "  " + s.url);
-        }
         OUT.println("紀錄檔        ：" + store.logsDir() + "（保留 "
                 + (store.getLogRetentionDays() == 0 ? "永久" : store.getLogRetentionDays() + " 天") + "）");
+        OUT.println("頻道數        ：" + store.channels().size());
+        for (Channel ch : store.channels()) {
+            ScheduleConfig sc = ch.getSchedule();
+            ZonedDateTime next = sc.nextRun(ZonedDateTime.now());
+            List<Site> sites = ch.loadSites();
+            long enabled = sites.stream().filter(s -> s.enabled).count();
+            OUT.println();
+            OUT.println("== 頻道「" + ch.getName() + "」（ID " + ch.id() + "）" + (ch.isEnabled() ? "" : "【停用】"));
+            OUT.println("Google Chat   ：" + (ch.hasWebhook() ? "已設定" : "未設定")
+                    + "，推播" + (ch.isChatEnabled() ? "啟用" : "停用") + "，單次最多 " + ch.getMaxPushPerRun() + " 則");
+            OUT.println("排程          ：" + sc.describe()
+                    + (next != null && sc.enabled && ch.isEnabled() ? "（若現在啟動，下次執行 " + next.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) + "）" : ""));
+            OUT.println("首次只建立基準：" + (sc.baselineFirstRun ? "是" : "否")
+                    + "；只推播 " + (sc.maxAgeDays == 0 ? "不限天數" : sc.maxAgeDays + " 天內") + "的文章");
+            OUT.println("關鍵字        ：" + String.join(", ", ch.loadKeywords()));
+            OUT.println("網站          ：啟用 " + enabled + " / 共 " + sites.size());
+            for (Site s : sites) {
+                OUT.println("  " + (s.enabled ? "[✓]" : "[ ]") + (s.fullText ? "[全文]" : "      ") + " " + s.name + "  " + s.url);
+            }
+        }
         return 0;
+    }
+
+    private static int addChannel(Store store, String[] args) throws IOException {
+        String name = args.length > 1 ? args[1] : null;
+        if (name == null || name.isBlank() || name.startsWith("--")) {
+            ERR.println("用法：--add-channel 頻道名稱");
+            return 2;
+        }
+        try {
+            Channel c = store.createChannel(name);
+            AppLog.info("新增頻道：" + c.getName() + "（命令列）");
+            OUT.println("已新增頻道「" + c.getName() + "」（ID " + c.id() + "）");
+            OUT.println("網站列表：" + c.dir().resolve("sites.tsv"));
+            OUT.println("關鍵字  ：" + c.dir().resolve("keywords.txt"));
+            OUT.println("排程等設定：" + c.dir().resolve("channel.properties") + "（預設每 60 分鐘）");
+            OUT.println("接著設定推播聊天室：--set-webhook --channel \"" + c.getName() + "\"");
+            return 0;
+        } catch (IllegalArgumentException e) {
+            ERR.println(e.getMessage());
+            return 1;
+        }
+    }
+
+    private static int deleteChannel(Store store, String[] args) throws IOException {
+        String name = args.length > 1 ? args[1] : null;
+        if (name == null || name.startsWith("--")) { ERR.println("用法：--delete-channel 頻道名稱 --yes"); return 2; }
+        Channel c = store.channel(name);
+        if (c == null) { ERR.println("找不到頻道「" + name + "」"); return 2; }
+        if (!has(args, "--yes")) {
+            ERR.println("刪除頻道「" + c.getName() + "」會一併刪除它的網站、關鍵字、Webhook 與已讀紀錄，無法復原。");
+            ERR.println("確定要刪除請加上 --yes");
+            return 1;
+        }
+        try {
+            store.deleteChannel(c);
+        } catch (IllegalStateException e) {
+            ERR.println(e.getMessage());
+            return 1;
+        }
+        AppLog.info("刪除頻道：" + c.getName() + "（命令列）");
+        OUT.println("已刪除頻道「" + c.getName() + "」");
+        return 0;
+    }
+
+    /** 依 --channel 取得頻道；未指定回傳 fallback；指定了但找不到時印出錯誤並回傳 null。 */
+    private static Channel channelArg(Store store, String[] args, Channel fallback) {
+        String v = value(args, "--channel");
+        if (v == null) return fallback;
+        Channel c = store.channel(v);
+        if (c == null) {
+            ERR.println("找不到頻道「" + v + "」。目前的頻道：");
+            for (Channel x : store.channels()) ERR.println("  " + x.id() + "  " + x.getName());
+        }
+        return c;
     }
 
     private static int setup(Store store, String[] args) throws Exception {
@@ -176,9 +246,9 @@ final class Cli {
         AppLog.info("使用者 " + user + " 建立帳號（命令列）");
         OUT.println("帳號已建立。");
 
-        String url = readLine("Google Chat Webhook URL（可先留空，之後用 --set-webhook 設定）：");
+        String url = readLine("頻道「" + store.primary().getName() + "」的 Google Chat Webhook URL（可先留空，之後用 --set-webhook 設定）：");
         if (url != null && !url.isBlank()) {
-            if (!saveWebhook(store, url.trim())) return 1;
+            if (!saveWebhook(store.primary(), url.trim())) return 1;
         }
         OUT.println();
         OUT.println("完成。接下來可以：");
@@ -189,37 +259,41 @@ final class Cli {
     }
 
     private static int setWebhook(Store store, String[] args) throws Exception {
+        Channel ch = channelArg(store, args, store.primary());
+        if (ch == null) return 2;
         if (!login(store, args)) return 1;
-        String url = readLine("Google Chat Webhook URL（留空表示清除）：");
+        String url = readLine("頻道「" + ch.getName() + "」的 Google Chat Webhook URL（留空表示清除）：");
         if (url == null) return 1;
         if (url.isBlank()) {
-            store.setWebhookUrl("");
-            AppLog.info("Google Chat Webhook 已清除（命令列）");
+            ch.setWebhookUrl("");
+            AppLog.info("[" + ch.getName() + "] Google Chat Webhook 已清除（命令列）");
             OUT.println("已清除。");
             return 0;
         }
-        return saveWebhook(store, url.trim()) ? 0 : 1;
+        return saveWebhook(ch, url.trim()) ? 0 : 1;
     }
 
-    private static boolean saveWebhook(Store store, String url) throws IOException {
+    private static boolean saveWebhook(Channel ch, String url) throws IOException {
         try {
             GoogleChatClient.validate(url);
         } catch (IllegalArgumentException e) {
             ERR.println(e.getMessage());
             return false;
         }
-        store.setWebhookUrl(url);
-        AppLog.info("Google Chat Webhook 已儲存（命令列）");
-        OUT.println("Webhook 已加密儲存。");
+        ch.setWebhookUrl(url);
+        AppLog.info("[" + ch.getName() + "] Google Chat Webhook 已儲存（命令列）");
+        OUT.println("頻道「" + ch.getName() + "」的 Webhook 已加密儲存。");
         return true;
     }
 
     private static int testChat(Store store, String[] args) throws Exception {
+        Channel ch = channelArg(store, args, store.primary());
+        if (ch == null) return 2;
         if (!login(store, args)) return 1;
-        if (!store.hasWebhook()) { ERR.println("尚未設定 Webhook，請先執行 --set-webhook"); return 1; }
+        if (!ch.hasWebhook()) { ERR.println("頻道「" + ch.getName() + "」尚未設定 Webhook，請先執行 --set-webhook"); return 1; }
         try {
-            new MonitorService(store).sendTest(store.getWebhookUrl());
-            AppLog.info("Google Chat 測試訊息傳送成功（命令列）");
+            new MonitorService(store).sendTest(ch.getWebhookUrl(), ch.getName());
+            AppLog.info("[" + ch.getName() + "] Google Chat 測試訊息傳送成功（命令列）");
             OUT.println("測試訊息已送出，請到 Google Chat 確認。");
             return 0;
         } catch (Exception e) {
@@ -230,9 +304,12 @@ final class Cli {
     }
 
     private static int runOnce(Store store, String[] args) throws Exception {
+        Channel ch = channelArg(store, args, null);
+        if (value(args, "--channel") != null && ch == null) return 2;
         if (!login(store, args)) return 1;
         AppLog.addListener(OUT::println);
-        new MonitorService(store).runOnce("命令列");
+        if (ch != null) new MonitorService(store).runChannel(ch, "命令列");
+        else new MonitorService(store).runAll("命令列");
         return 0;
     }
 
@@ -241,7 +318,11 @@ final class Cli {
         AppLog.addListener(OUT::println);     // systemd 會把標準輸出收進 journal
         AppLog.info("以無介面模式啟動，版本 " + version() + "，資料夾：" + store.dir() + "，Java "
                 + System.getProperty("java.version") + "，" + System.getProperty("os.name"));
-        if (!store.hasWebhook()) AppLog.info("[警告] 尚未設定 Google Chat Webhook，命中的文章只會記錄在紀錄檔");
+        for (Channel ch : store.channels()) {
+            if (ch.isEnabled() && !ch.hasWebhook()) {
+                AppLog.info("[" + ch.getName() + "] [警告] 尚未設定 Google Chat Webhook，命中的文章只會記錄在紀錄檔");
+            }
+        }
 
         MonitorService monitor = new MonitorService(store);
         SchedulerService scheduler = new SchedulerService(store, monitor);

@@ -3,6 +3,7 @@ package com.secnews.ui;
 import com.secnews.AppLog;
 import com.secnews.ScheduleConfig;
 import com.secnews.SchedulerService;
+import com.secnews.Channel;
 import com.secnews.Store;
 
 import javax.swing.*;
@@ -17,7 +18,7 @@ import java.util.Map;
 
 /** 監控排程設定：每隔 N 分鐘（可限制時段與星期）／每日／每週指定星期幾。 */
 final class SchedulePanel extends JPanel {
-    private final Store store;
+    private final Channel store;
     private final SchedulerService scheduler;
 
     private final JCheckBox enabled = new JCheckBox("啟用自動排程");
@@ -42,7 +43,7 @@ final class SchedulePanel extends JPanel {
     private final JLabel dirtyLabel = new JLabel(" ");
     private boolean loading;
 
-    SchedulePanel(Store store, SchedulerService scheduler) {
+    SchedulePanel(Channel store, SchedulerService scheduler) {
         super(new BorderLayout());
         this.store = store;
         this.scheduler = scheduler;
@@ -131,8 +132,23 @@ final class SchedulePanel extends JPanel {
         }
 
         load();
-        scheduler.setOnNextRunChanged(t -> SwingUtilities.invokeLater(() -> showNext(t)));
-        showNext(scheduler.nextRunAt());
+        refreshNext();
+    }
+
+    /** 更新「下次執行」顯示（排程器通知時由主視窗呼叫）。 */
+    void refreshNext() { showNext(scheduler.nextRunAt(store)); }
+
+    /**
+     * 切換頻道或關閉前呼叫：有未儲存的變更時詢問是否儲存。
+     * 回傳 false 表示使用者取消（不要切換）。
+     */
+    boolean confirmLeave() {
+        if (!isDirty()) return true;
+        int r = JOptionPane.showConfirmDialog(this,
+                "頻道「" + store.getName() + "」的排程設定已變更但尚未儲存。\n要先儲存嗎？",
+                "尚未儲存", JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (r == JOptionPane.CANCEL_OPTION || r == JOptionPane.CLOSED_OPTION) return false;
+        return r == JOptionPane.NO_OPTION || save();
     }
 
     private static JComponent indent() { return (JComponent) Box.createHorizontalStrut(22); }
@@ -235,9 +251,9 @@ final class SchedulePanel extends JPanel {
         }
         try {
             store.setSchedule(c);
-            AppLog.info("排程已儲存：" + c.describe() + "；首次只建立基準：" + (c.baselineFirstRun ? "是" : "否")
+            AppLog.info("[" + store.getName() + "] 排程已儲存：" + c.describe() + "；首次只建立基準：" + (c.baselineFirstRun ? "是" : "否")
                     + "；只推播 " + (c.maxAgeDays == 0 ? "不限天數" : c.maxAgeDays + " 天內") + "的文章");
-            scheduler.reschedule();
+            scheduler.reschedule(store);
             updateDirty();
             JOptionPane.showMessageDialog(this, "已儲存：" + c.describe());
             return true;
@@ -255,17 +271,17 @@ final class SchedulePanel extends JPanel {
             if (r == JOptionPane.CANCEL_OPTION || r == JOptionPane.CLOSED_OPTION) return;
             if (r == JOptionPane.YES_OPTION && !save()) return;
         }
-        scheduler.runNow();
-        JOptionPane.showMessageDialog(this, "已開始執行，結果請看「執行紀錄」");
+        scheduler.runNow(store);
+        JOptionPane.showMessageDialog(this, "已開始執行頻道「" + store.getName() + "」，結果請看「執行紀錄」");
     }
 
     private void clearSeen() {
         if (JOptionPane.showConfirmDialog(this,
-                "清除後，下次執行會把所有網站視為第一次抓取。確定清除？", "清除已讀紀錄",
+                "清除頻道「" + store.getName() + "」的已讀紀錄後，下次執行會把此頻道所有網站視為第一次抓取。確定清除？", "清除已讀紀錄",
                 JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
         try {
             store.clearSeen();
-            AppLog.info("已清除已讀紀錄");
+            AppLog.info("[" + store.getName() + "] 已清除已讀紀錄");
         } catch (Exception e) {
             UiUtil.error(this, "清除失敗", e);
         }

@@ -8,9 +8,9 @@ javac --release 8 -encoding UTF-8 -d build/classes src/com/secnews/Launcher.java
 javac --release 17 -encoding UTF-8 -d build/classes $(find src -name '*.java' ! -name Launcher.java)
 javac --release 17 -encoding UTF-8 -cp build/classes -d build/test-classes $(find test -name '*.java')
 FAILED=0
-for t in SelfTest V11Test V12Test V13Test V14Test ResetTest; do
+for t in SelfTest V11Test V12Test V13Test V14Test V15Test ResetTest; do
   echo "== $t"
-  java -Djava.awt.headless=true -Dstdout.encoding=UTF-8 -Xmx96m -cp build/classes:build/test-classes com.secnews.$t | grep -v '^snippet=' || FAILED=1
+  timeout 300 java -Djava.awt.headless=true -Dstdout.encoding=UTF-8 -Xmx96m -cp build/classes:build/test-classes com.secnews.$t | grep -v '^snippet=' || FAILED=1
 done
 if [ $FAILED -ne 0 ]; then echo "測試失敗"; exit 1; fi
 echo "全部測試通過"

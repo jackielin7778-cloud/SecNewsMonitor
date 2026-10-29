@@ -50,4 +50,18 @@ public final class KeywordMatcher {
         }
         return hits;
     }
+
+    /** 把文字拆成關鍵字清單：換行、逗號（, ，）、頓號、分號（; ；）都可分隔；去除空白與重複（不分大小寫）。 */
+    public static List<String> parseList(String text) {
+        List<String> out = new java.util.ArrayList<>();
+        if (text == null) return out;
+        for (String raw : text.split("[\\r\\n,，、;；]+")) {
+            String k = raw.strip();
+            if (k.isEmpty()) continue;
+            boolean dup = false;
+            for (String o : out) if (o.equalsIgnoreCase(k)) { dup = true; break; }
+            if (!dup) out.add(k);
+        }
+        return out;
+    }
 }

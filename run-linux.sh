@@ -31,6 +31,14 @@ if [ -z "$JAVA_BIN" ]; then
   exit 1
 fi
 
+# 系統語系不是 UTF-8（例如 systemd 服務、最小化安裝的伺服器）時，命令列的中文頻道名稱會變成亂碼：
+# 只對本程式改用 C.UTF-8（不影響系統設定）。
+if ! locale charmap 2>/dev/null | grep -qi 'utf-\?8'; then
+  for l in C.UTF-8 C.utf8 en_US.UTF-8; do
+    if locale -a 2>/dev/null | grep -qix "$(echo "$l" | sed 's/UTF-8/utf8/I')\|$l"; then export LC_ALL="$l"; break; fi
+  done
+fi
+
 # 低資源設定：小 heap、Serial GC、只用 C1 編譯器
 JAVA_OPTS=(-Xms16m -Xmx96m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8)
 

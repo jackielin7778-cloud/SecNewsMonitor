@@ -4,6 +4,7 @@ import com.secnews.AppLog;
 import com.secnews.FeedItem;
 import com.secnews.MonitorService;
 import com.secnews.Site;
+import com.secnews.Channel;
 import com.secnews.Store;
 
 import javax.swing.*;
@@ -18,7 +19,7 @@ import java.util.List;
 
 /** 資安網站列表：查詢、新增、修改、刪除、測試。 */
 final class SitesPanel extends JPanel {
-    private final Store store;
+    private final Channel store;
     private final MonitorService monitor;
     private final List<Site> sites = new ArrayList<>();
     private final Model model = new Model();
@@ -26,7 +27,7 @@ final class SitesPanel extends JPanel {
     private final TableRowSorter<Model> sorter = new TableRowSorter<>(model);
     private final JTextField search = new JTextField(20);
 
-    SitesPanel(Store store, MonitorService monitor) {
+    SitesPanel(Channel store, MonitorService monitor) {
         super(new BorderLayout(8, 8));
         this.store = store;
         this.monitor = monitor;
@@ -62,6 +63,9 @@ final class SitesPanel extends JPanel {
         btns.add(button("刪除", this::delete));
         btns.add(Box.createHorizontalStrut(16));
         btns.add(button("測試抓取", this::test));
+        btns.add(Box.createHorizontalStrut(16));
+        btns.add(button("匯入…", this::importFile));
+        btns.add(button("匯出…", this::exportFile));
         add(btns, BorderLayout.SOUTH);
 
         reload();
@@ -111,7 +115,7 @@ final class SitesPanel extends JPanel {
         sites.add(s);
         persist();
         model.fireTableDataChanged();
-        AppLog.info("新增網站：" + s.name);
+        AppLog.info("[" + store.getName() + "] 新增網站：" + s.name);
     }
 
     private void edit() {
@@ -123,7 +127,7 @@ final class SitesPanel extends JPanel {
         s.fullText = edited.fullText;
         persist();
         model.fireTableDataChanged();
-        AppLog.info("修改網站：" + s.name);
+        AppLog.info("[" + store.getName() + "] 修改網站：" + s.name);
     }
 
     private void delete() {
@@ -134,7 +138,7 @@ final class SitesPanel extends JPanel {
         sites.remove(s);
         persist();
         model.fireTableDataChanged();
-        AppLog.info("刪除網站：" + s.name);
+        AppLog.info("[" + store.getName() + "] 刪除網站：" + s.name);
     }
 
     private void test() {
@@ -156,6 +160,52 @@ final class SitesPanel extends JPanel {
                 }
             }
         }.execute();
+    }
+
+    /** 從 TSV 檔匯入網站（例如 docs/ai-sites.tsv，或其他頻道匯出的檔案）；名稱或網址重複的略過。 */
+    private void importFile() {
+        JFileChooser fc = new JFileChooser();
+        fc.setDialogTitle("匯入網站列表（.tsv）");
+        if (fc.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        try {
+            List<String> lines = java.nio.file.Files.readAllLines(fc.getSelectedFile().toPath(), java.nio.charset.StandardCharsets.UTF_8);
+            List<String> added = new ArrayList<>();
+            int skipped = 0, bad = 0;
+            for (String line : lines) {
+                if (line.isBlank() || line.startsWith("#")) continue;
+                Site n = Site.fromLine(line.startsWith("\uFEFF") ? line.substring(1) : line);
+                if (n == null) { bad++; continue; }
+                boolean dup = sites.stream().anyMatch(x -> x.name.equals(n.name) || x.url.equalsIgnoreCase(n.url));
+                if (dup) { skipped++; continue; }
+                sites.add(n);
+                added.add(n.name);
+            }
+            if (!added.isEmpty()) {
+                persist();
+                model.fireTableDataChanged();
+                AppLog.info("[" + store.getName() + "] 匯入網站 " + added.size() + " 個：" + String.join(", ", added));
+            }
+            JOptionPane.showMessageDialog(this, "新增 " + added.size() + " 個網站"
+                    + (skipped > 0 ? "，略過重複 " + skipped + " 個" : "")
+                    + (bad > 0 ? "，格式錯誤 " + bad + " 行" : ""));
+        } catch (Exception e) {
+            UiUtil.error(this, "匯入失敗", e);
+        }
+    }
+
+    private void exportFile() {
+        JFileChooser fc = new JFileChooser();
+        fc.setDialogTitle("匯出網站列表");
+        fc.setSelectedFile(new java.io.File(store.getName().replaceAll("[\\\\/:*?\"<>|]", "_") + "-sites.tsv"));
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        StringBuilder sb = new StringBuilder("# name\turl\ttype(RSS|HTML)\tenabled\tfullText\n");
+        for (Site s : sites) sb.append(s.toLine()).append('\n');
+        try {
+            java.nio.file.Files.writeString(fc.getSelectedFile().toPath(), sb.toString(), java.nio.charset.StandardCharsets.UTF_8);
+            JOptionPane.showMessageDialog(this, "已匯出 " + sites.size() + " 個網站");
+        } catch (Exception e) {
+            UiUtil.error(this, "匯出失敗", e);
+        }
     }
 
     private Site showEditor(Site s, String title) {
@@ -221,7 +271,7 @@ final class SitesPanel extends JPanel {
             else return;
             persist();
             fireTableCellUpdated(r, c);
-            AppLog.info(s.name + "：" + (c == 0 ? "監控" : "全文比對") + (Boolean.TRUE.equals(v) ? "已啟用" : "已停用"));
+            AppLog.info("[" + store.getName() + "] " + s.name + "：" + (c == 0 ? "監控" : "全文比對") + (Boolean.TRUE.equals(v) ? "已啟用" : "已停用"));
         }
     }
 }

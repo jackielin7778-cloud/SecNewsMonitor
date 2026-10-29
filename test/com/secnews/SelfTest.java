@@ -91,7 +91,7 @@ public class SelfTest {
         st.createAccount("admin", "Passw0rd!".toCharArray());
         String hook = "https://chat.googleapis.com/v1/spaces/S/messages?key=K&token=SECRET";
         st.setWebhookUrl(hook);
-        String cfg = Files.readString(dir.resolve("config.properties"));
+        String cfg = Files.readString(dir.resolve("config.properties")) + Files.readString(dir.resolve("channels/c1/channel.properties"));
         check("webhook encrypted on disk", !cfg.contains("SECRET") && !cfg.contains("Passw0rd"));
         Store st2 = new Store();
         check("bad login", !st2.login("admin", "wrong123".toCharArray()));
@@ -108,7 +108,7 @@ public class SelfTest {
         check("site tsv", back.name.equals("名稱 含tab") && back.type==Site.Type.HTML && !back.enabled);
         for (int i=0;i<5100;i++) st3.markSeen("S","k"+i);
         st3.flushSeen();
-        check("seen per-site no global cap", Files.readAllLines(dir.resolve("seen.txt")).size()==5100 && st3.isSeen("S","k0") && st3.isSeen("S","k5099") && !st3.isSeen("T","k0"));
+        check("seen per-site no global cap", Files.readAllLines(dir.resolve("channels/c1/seen.txt")).size()==5100 && st3.isSeen("S","k0") && st3.isSeen("S","k5099") && !st3.isSeen("T","k0"));
 
         System.out.println("PASS=" + pass + " FAIL=" + fail);
         if (fail>0) System.exit(1);

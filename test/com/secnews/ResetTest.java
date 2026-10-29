@@ -9,7 +9,7 @@ public class ResetTest { public static void main(String[] a) throws Exception {
   Store s2=new Store(); s2.resetAccount();
   Store s3=new Store();
   if(s3.hasAccount()){f++;System.out.println("FAIL account still");}
-  if(Files.readString(dir.resolve("config.properties")).contains("chat.webhook.enc")){f++;System.out.println("FAIL webhook still");}
+  if((Files.readString(dir.resolve("config.properties"))+Files.readString(dir.resolve("channels/c1/channel.properties"))).contains("chat.webhook.enc")){f++;System.out.println("FAIL webhook still");}
   if(s3.getSchedule().intervalMinutes!=15||s3.getMaxPushPerRun()!=7||s3.getLogRetentionDays()!=9){f++;System.out.println("FAIL settings lost");}
   if(!s3.loadKeywords().equals(List.of("Java","X"))||!s3.isSeen("Site","k1")||s3.loadSites().size()!=7){f++;System.out.println("FAIL data lost");}
   s3.createAccount("new","NewPass99".toCharArray());

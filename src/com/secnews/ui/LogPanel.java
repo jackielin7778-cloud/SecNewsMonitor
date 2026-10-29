@@ -32,7 +32,7 @@ final class LogPanel extends JPanel {
         south.setLayout(new BoxLayout(south, BoxLayout.Y_AXIS));
 
         JPanel btns = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        JButton run = new JButton("立即執行一次");
+        JButton run = new JButton("立即執行全部頻道");
         JButton clear = new JButton("清除畫面");
         JButton open = new JButton("開啟紀錄檔資料夾");
         run.addActionListener(e -> scheduler.runNow());

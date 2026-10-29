@@ -4,6 +4,9 @@
 有新文章就推播到 Google Chat。純 Java（JDK 17 以上），**不需任何第三方套件**，
 同一個 `SecNewsMonitor.jar` 可在 Windows、macOS、Linux 執行（Linux 伺服器可用無介面模式＋systemd）。
 
+v1.5 起支援**多頻道**：例如「資安新聞」推到資安聊天室、「AI 新聞」推到 AI 聊天室，
+每個頻道有自己的網站列表、關鍵字、排程與 Google Chat Webhook。
+
 ## 1. 執行環境
 
 - JDK / JRE **17 以上**（OpenJDK、Eclipse Temurin、Azul Zulu 皆可），**可與 Java 8 並存**
@@ -81,18 +84,34 @@
 
 ## 3. 功能
 
+主視窗上方是**頻道列**：選擇頻道、新增頻道、重新命名、刪除頻道、啟用／停用此頻道，並顯示該頻道的下次執行時間。
+下方前 4 個分頁都是**目前所選頻道**的設定；「執行紀錄」是全部頻道共用（每行前面有 `[頻道名稱]`）。
+
 | 分頁 | 說明 |
 |---|---|
-| 資安網站列表 | 查詢、新增、修改、刪除、啟用/停用、**全文比對**開關、測試抓取。類型 RSS（建議）或 HTML（沒有 RSS 的網站） |
-| 監控關鍵字 | 可用逗號一次輸入多個。不分大小寫；英數關鍵字以完整單字比對（Java 不會誤中 JavaScript） |
+| 網站列表 | 查詢、新增、修改、刪除、啟用/停用、**全文比對**開關、測試抓取、**匯入／匯出 TSV 檔**。類型 RSS（建議）或 HTML（沒有 RSS 的網站） |
+| 監控關鍵字 | 可用逗號一次輸入多個。**複製全部**（一行一個到剪貼簿）、**貼上匯入**（貼上多行清單，自動略過重複）。不分大小寫；英數關鍵字以完整單字比對（Java 不會誤中 JavaScript） |
 | 監控排程 | 每隔 N 分鐘（最少 5 分鐘，**可限制執行時段與星期**）／每日指定時間／每週指定星期幾與時間；可立即執行、清除已讀紀錄；有未儲存的變更會顯示提示 |
 | Google Chat 設定 | 貼上完整 Webhook URL，或分別輸入 Space ID、Key、Token；**單次最多推播則數**（預設 20）；可傳送測試訊息 |
 | 執行紀錄 | 每次抓取結果、錯誤、推播紀錄；**紀錄檔一天一個，可設定保留天數**（預設 30 天，0 = 永久保留） |
 
+### 多頻道（v1.5）
+- **新增頻道**：頻道列按「新增頻道」→ 輸入名稱（例如「AI 新聞」）→ 依序設定網站列表、關鍵字、排程、Google Chat。
+  新頻道的網站與關鍵字是空的；AI 新聞可在「網站列表」按「匯入…」載入 `docs/ai-sites.tsv`。
+- **各自獨立**：每個頻道有自己的網站列表、關鍵字、排程（含執行時段）、Webhook、單次推播上限、已讀紀錄。
+  同一個網站可以出現在多個頻道。
+- **重複命中**：同一則新聞符合多個頻道的關鍵字時，每個頻道都會推播到自己的聊天室。
+- **執行順序**：各頻道依自己的排程執行；同一時間只執行一個頻道，其他到期的頻道會在它結束後接著執行（降低資源與連線數）。
+- **停用頻道**：取消勾選「啟用此頻道」→ 不會自動執行，設定都保留。
+- **刪除頻道**：需輸入頻道名稱確認；會刪除該頻道的所有設定與已讀紀錄（建議先「匯出…」網站列表）。至少保留一個頻道。
+- **推播標題**：Google Chat 訊息開頭為「🔔 *頻道名稱* 日期時間｜共 N 則」。
+- **由舊版升級**：第一次啟動時，原本的網站列表、關鍵字、排程、Google Chat 設定、已讀紀錄自動轉移到「資安新聞」頻道，
+  不需重新設定；原檔備份在資料夾內的 `backup-before-1.5/`。
+
 ### 全文比對（v1.1）
 
 有些網站的 RSS 只有標題（例如資安院的漏洞警訊公告），關鍵字只寫在內文時比對不到。
-在「資安網站列表」勾選該網站的「全文比對」後：
+在「網站列表」勾選該網站的「全文比對」後：
 
 - 標題／摘要沒命中的**新文章**，會再下載文章網頁、取出內文比對（去除程式碼、樣式、選單、頁首頁尾）
 - 每次執行、每個網站最多抓 **30 篇**，每篇間隔 1 秒；超過的留待下次執行，不會漏掉
@@ -180,10 +199,14 @@ Google Workspace 管理員必須允許使用 Webhook。選單名稱以 Google �
 
 | 檔案 | 內容 |
 |---|---|
-| config.properties | 帳號（PBKDF2 雜湊，非明文）、排程、**加密後**的 Webhook |
-| sites.tsv | 網站列表 |
-| keywords.txt | 關鍵字 |
-| seen.txt | 已處理文章（每個網站分開保存，用來去重） |
+| config.properties | 帳號（PBKDF2 雜湊，非明文）、紀錄保留天數、頻道順序 |
+| channels/頻道ID/channel.properties | 頻道名稱、啟用、**加密後**的 Webhook、推播設定、排程（`schedule.*`） |
+| channels/頻道ID/sites.tsv | 該頻道的網站列表 |
+| channels/頻道ID/keywords.txt | 該頻道的關鍵字 |
+| channels/頻道ID/seen.txt | 該頻道已處理的文章（每個網站分開保存，用來去重） |
+| backup-before-1.5/ | 由 v1.4 以前升級時的原始檔備份 |
+
+頻道 ID 是 `c1`、`c2`…（`c1` 通常是「資安新聞」），名稱可在畫面上改，ID 不變。`--status` 會列出每個頻道的 ID。
 | logs/monitor-YYYY-MM-DD.log | 執行紀錄，一天一個檔案；超過保留天數自動刪除（每天第一筆紀錄寫入時、程式啟動時、按「儲存」或「立即清理」時） |
 
 保留天數的計算：設定 30 天、今天 10/27 → 保留 9/28～10/27，刪除 9/27 以前。
@@ -223,7 +246,10 @@ Linux 伺服器通常沒有 DISPLAY，請用**命令列＋無介面模式**。�
 | `--headless` | 常駐背景，依排程執行（給 systemd 用） |
 | `--run-once` | 立即執行一次後結束 |
 | `--set-webhook`／`--test-chat` | 變更 Webhook／傳送測試訊息 |
-| `--status` | 顯示設定與執行狀態（不需密碼） |
+| `--status` | 顯示設定、執行狀態與所有頻道（不需密碼） |
+| `--add-channel 名稱` | 新增頻道（之後編輯該頻道的 `sites.tsv`、`keywords.txt`） |
+| `--delete-channel 名稱 --yes` | 刪除頻道 |
+| `--channel 名稱或ID` | 搭配 `--run-once`、`--set-webhook`、`--test-chat` 指定頻道；`--run-once` 未指定時執行全部啟用中的頻道，其他指令未指定時用第一個頻道 |
 | `--setup --reset` | 忘記密碼時重設帳號（清除 Webhook，其他設定保留） |
 
 **密碼來源**（依序）：`--password-file 檔案` → `SECNEWS_PASSWORD_FILE` → systemd credential
@@ -231,9 +257,21 @@ Linux 伺服器通常沒有 DISPLAY，請用**命令列＋無介面模式**。�
 無介面執行時建議用密碼檔或 systemd credential，檔案權限 600。
 
 **資料夾**：`SECNEWS_HOME`，預設 `~/.secnewsmonitor`，權限自動設為 700。
-網站 `sites.tsv`、關鍵字 `keywords.txt` 可直接編輯；排程等設定在 `config.properties` 的 `schedule.*`，
-也可以在有圖形介面的電腦設定好，再把 `config.properties`、`sites.tsv`、`keywords.txt` 複製過來（登入密碼相同）。
+各頻道的網站 `channels/頻道ID/sites.tsv`、關鍵字 `channels/頻道ID/keywords.txt` 可直接編輯；
+排程等設定在 `channels/頻道ID/channel.properties` 的 `schedule.*`。
+也可以在有圖形介面的電腦設定好，再把 `config.properties` 與整個 `channels/` 資料夾複製過來（登入密碼相同）。
 修改前請先停止程式。
+
+**多頻道範例**（AI 新聞推到另一個聊天室）：
+```bash
+./run-linux.sh --add-channel "AI 新聞"            # 輸出頻道 ID，例如 c2
+cp docs/ai-sites.tsv ~/.secnewsmonitor/channels/c2/sites.tsv
+printf 'AI\n生成式\nLLM\n' > ~/.secnewsmonitor/channels/c2/keywords.txt
+./run-linux.sh --set-webhook --channel c2          # 貼上 AI 聊天室的 Webhook
+./run-linux.sh --test-chat --channel c2
+./run-linux.sh --run-once --channel c2             # 第一次只建立基準
+```
+系統語系不是 UTF-8 時，`run-linux.sh` 會自動改用 `C.UTF-8` 執行本程式，避免中文頻道名稱變亂碼；也可以直接用頻道 ID（`c2`）。
 
 ### 安裝成 systemd 服務（範例：Ubuntu／RHEL 系列）
 
@@ -273,7 +311,7 @@ journalctl -u secnewsmonitor -f        # 查看執行紀錄
 **不提交**（`.gitignore` 已排除）：
 - `build/`、`SecNewsMonitor.jar`、`*.zip`：由 `build.sh`／`build.bat` 產生，改放在發佈區（例如 Git 的 Release／Tag 附件或公司檔案伺服器）
 - `jdk*/`：第三方 JDK（約 200 MB），部署時另外下載放入
-- `config.properties`、`seen.txt`、`logs/` 等執行期資料：**含密碼雜湊與加密的 Google Chat Webhook，絕對不可提交**
+- `config.properties`、`channels/`、`seen.txt`、`logs/` 等執行期資料：**含密碼雜湊與加密的 Google Chat Webhook，絕對不可提交**
 
 **測試**：`./run-tests.sh`（macOS／Linux）或 `run-tests.bat`（Windows），不需網路與圖形介面。修改程式後、提交前請先執行。
 Linux 另有命令列整合測試：先 `./build.sh`，再 `./test/linux-cli-test.sh`（需要 python3）。
