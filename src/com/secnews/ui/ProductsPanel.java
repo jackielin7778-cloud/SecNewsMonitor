@@ -41,7 +41,7 @@ final class ProductsPanel extends JPanel {
 
         table.setRowHeight(table.getRowHeight() + 6);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        int[] w = {45, 160, 220, 160, 90};
+        int[] w = {45, 130, 190, 120, 150, 150};
         for (int i = 0; i < w.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(w[i]);
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override public void mouseClicked(java.awt.event.MouseEvent e) { if (e.getClickCount() == 2) edit(); }
@@ -138,7 +138,7 @@ final class ProductsPanel extends JPanel {
                 try {
                     List<String> l = get();
                     long ok = l.stream().filter(s -> s.startsWith("✓")).count();
-                    StringBuilder sb = new StringBuilder("搜尋到 " + l.size() + " 件，符合「名稱需包含」" + ok + " 件（✓ 符合、✗ 排除），前 15 件：\n\n");
+                    StringBuilder sb = new StringBuilder("搜尋到 " + l.size() + " 件，符合條件 " + ok + " 件（✓ 符合、✗ 排除並註明原因），前 15 件：\n\n");
                     for (int i = 0; i < Math.min(15, l.size()); i++) sb.append(l.get(i)).append('\n');
                     JTextArea area = new JTextArea(sb.toString(), 18, 70);
                     area.setEditable(false);
@@ -155,6 +155,8 @@ final class ProductsPanel extends JPanel {
         JTextField name = new JTextField(w.name, 28);
         JTextField query = new JTextField(w.query, 28);
         JTextField must = new JTextField(w.mustContain, 28);
+        JTextField excl = new JTextField(w.exclude, 28);
+        JSpinner min = new JSpinner(new SpinnerNumberModel(w.minPrice, 0, 100_000_000, 100));
         JSpinner max = new JSpinner(new SpinnerNumberModel(w.maxPrice, 0, 100_000_000, 100));
         JCheckBox enabled = new JCheckBox("啟用", w.enabled);
         JPanel p = new JPanel(new GridBagLayout());
@@ -162,7 +164,7 @@ final class ProductsPanel extends JPanel {
         c.insets = new Insets(4, 4, 4, 4);
         c.anchor = GridBagConstraints.WEST;
         Object[][] rows = {{"名稱：", name}, {"搜尋關鍵字：", query}, {"名稱需包含：", must},
-                {"價格上限（NT$）：", max}, {"", enabled}};
+                {"排除字：", excl}, {"最低價格（NT$）：", min}, {"價格上限（NT$）：", max}, {"", enabled}};
         for (int i = 0; i < rows.length; i++) {
             c.gridx = 0; c.gridy = i; c.fill = GridBagConstraints.NONE;
             p.add(new JLabel((String) rows[i][0]), c);
@@ -172,22 +174,26 @@ final class ProductsPanel extends JPanel {
         c.gridx = 1; c.gridy = rows.length;
         p.add(new JLabel("<html><small>名稱：自己看得懂的名稱（可留空，預設＝搜尋關鍵字）。<br>"
                 + "搜尋關鍵字：送到 PChome 搜尋，例如 iPhone 17 Pro 256GB。<br>"
-                + "名稱需包含：商品名稱必須包含這些字（空白分隔，全部都要有），用來排除保護殼等配件；可留空。<br>"
-                + "價格上限：0 = 不設定。</small></html>"), c);
+                + "名稱需包含：商品名稱必須包含這些字（空白分隔，全部都要有）；可留空。<br>"
+                + "排除字：商品名稱出現任一個就排除（空白分隔），例如：保護貼 保護殼 殼 膜 支架。<br>"
+                + "最低價格：低於此價格的商品不列入，可排除便宜的配件；0 = 不設定。<br>"
+                + "價格上限：價格 ≤ 此值時通知「低於設定價格」；0 = 不設定。</small></html>"), c);
         while (true) {
             if (JOptionPane.showConfirmDialog(this, p, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE)
                     != JOptionPane.OK_OPTION) return null;
             String q = query.getText().trim();
             String n = name.getText().trim().isEmpty() ? q : name.getText().trim();
+            int mn = (Integer) min.getValue(), mx = (Integer) max.getValue();
             String err = q.isEmpty() ? "搜尋關鍵字不可空白"
+                    : mn > 0 && mx > 0 && mn > mx ? "最低價格不可高於價格上限"
                     : items.stream().anyMatch(x -> x != original && x.name.equalsIgnoreCase(n)) ? "名稱已存在" : null;
-            if (err == null) return new ProductWatch(n, q, must.getText(), (Integer) max.getValue(), enabled.isSelected());
+            if (err == null) return new ProductWatch(n, q, must.getText(), mx, enabled.isSelected(), excl.getText(), mn);
             JOptionPane.showMessageDialog(this, err, "輸入錯誤", JOptionPane.WARNING_MESSAGE);
         }
     }
 
     private final class Model extends AbstractTableModel {
-        private final String[] cols = {"啟用", "名稱", "搜尋關鍵字", "名稱需包含", "價格上限"};
+        private final String[] cols = {"啟用", "名稱", "搜尋關鍵字", "名稱需包含", "排除字", "價格範圍（NT$）"};
         public int getRowCount() { return items.size(); }
         public int getColumnCount() { return cols.length; }
         @Override public String getColumnName(int c) { return cols[c]; }
@@ -196,8 +202,11 @@ final class ProductsPanel extends JPanel {
         public Object getValueAt(int r, int c) {
             ProductWatch w = items.get(r);
             return switch (c) {
-                case 0 -> w.enabled; case 1 -> w.name; case 2 -> w.query; case 3 -> w.mustContain;
-                default -> w.maxPrice == 0 ? "—" : "NT$" + String.format("%,d", w.maxPrice);
+                case 0 -> w.enabled; case 1 -> w.name; case 2 -> w.query; case 3 -> w.mustContain; case 4 -> w.exclude;
+                default -> w.minPrice == 0 && w.maxPrice == 0 ? "—"
+                        : w.maxPrice == 0 ? "≥ " + String.format("%,d", w.minPrice)
+                        : w.minPrice == 0 ? "≤ " + String.format("%,d", w.maxPrice)
+                        : String.format("%,d～%,d", w.minPrice, w.maxPrice);
             };
         }
         @Override public void setValueAt(Object v, int r, int c) {

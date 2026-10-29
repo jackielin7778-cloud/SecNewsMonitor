@@ -197,7 +197,9 @@ public final class MonitorService {
     public List<String> testProduct(Channel ch, ProductWatch w) throws Exception {
         List<String> out = new ArrayList<>();
         for (ProductMonitor.Product p : products.search(ch, w)) {
-            out.add((w.accepts(p.name) ? "✓ " : "✗ ") + "NT$" + ProductMonitor.fmt(p.price) + "  " + p.name);
+            String why = w.rejectReason(p.name, p.price);
+            out.add((why == null ? "✓ " : "✗ ") + "NT$" + ProductMonitor.fmt(p.price) + "  " + p.name
+                    + (why == null ? "" : "（" + why + "）"));
         }
         return out;
     }

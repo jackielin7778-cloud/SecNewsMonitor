@@ -56,7 +56,7 @@ final class ProductMonitor {
                 boolean firstTime = baseline && !ch.hasProductBaseline(w.name);
                 int matched = 0, n0 = hits.size();
                 for (Product p : found) {
-                    if (!w.accepts(p.name)) continue;
+                    if (!w.accepts(p.name, p.price)) continue;
                     matched++;
                     Integer last = ch.lastPrice(w.name, p.id);
                     List<String> reasons = new ArrayList<>();

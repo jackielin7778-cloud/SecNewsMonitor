@@ -162,6 +162,8 @@ final class Cli {
                 for (ProductWatch w : ps) {
                     OUT.println("  " + (w.enabled ? "[✓]" : "[ ]") + " " + w.name + "  搜尋「" + w.query + "」"
                             + (w.mustContain.isEmpty() ? "" : "  名稱需包含「" + w.mustContain + "」")
+                            + (w.exclude.isEmpty() ? "" : "  排除「" + w.exclude + "」")
+                            + (w.minPrice > 0 ? "  最低 NT$" + w.minPrice : "")
                             + (w.maxPrice > 0 ? "  上限 NT$" + w.maxPrice : ""));
                 }
                 continue;
@@ -193,7 +195,7 @@ final class Cli {
             OUT.println("已新增" + (product ? "商品監控" : "") + "頻道「" + c.getName() + "」（ID " + c.id() + "）");
             if (product) {
                 OUT.println("商品清單：" + c.dir().resolve("products.tsv")
-                        + "（每行：名稱<TAB>搜尋關鍵字<TAB>名稱需包含<TAB>價格上限<TAB>true）");
+                        + "（每行：名稱<TAB>搜尋關鍵字<TAB>名稱需包含<TAB>價格上限<TAB>true<TAB>排除字<TAB>最低價格）");
             } else {
                 OUT.println("網站列表：" + c.dir().resolve("sites.tsv"));
                 OUT.println("關鍵字  ：" + c.dir().resolve("keywords.txt"));

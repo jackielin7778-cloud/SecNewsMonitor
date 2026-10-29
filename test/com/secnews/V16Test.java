@@ -158,6 +158,29 @@ public class V16Test {
             List<String> t = ms2.testProduct(rc, rc.loadProducts().get(0));
             check("testProduct marks", t.size() == 2 && t.get(0).startsWith("✓") && t.get(1).startsWith("✗"));
 
+            // v1.6.1：排除字、最低價格
+            ProductWatch ex = new ProductWatch("Duo", "Apple iPhone Duo", "", 80000, true, "保護貼 保護殼 膜", 20000);
+            check("exclude word", !ex.accepts("【大螢膜PRO】Apple iPhone Duo 摺疊保護貼", 30000));
+            check("min price", !ex.accepts("Apple iPhone Duo 5G 一體成型", 699)
+                    && "低於最低價格".equals(ex.rejectReason("Apple iPhone Duo 5G", 699)));
+            check("accepted phone", ex.accepts("Apple iPhone Duo 512GB", 59900));
+            check("reason text", ex.rejectReason("iPhone Duo 保護殼", 999).contains("保護殼"));
+            ProductWatch rt = ProductWatch.fromLine(ex.toLine());
+            check("tsv round-trip v1.6.1", rt.exclude.equals("保護貼 保護殼 膜") && rt.minPrice == 20000 && rt.maxPrice == 80000);
+            ProductWatch old = ProductWatch.fromLine("A\tq\tm\t100\ttrue");
+            check("old 5-column line", old.exclude.isEmpty() && old.minPrice == 0 && old.maxPrice == 100);
+            rc.saveProducts(List.of(ex));
+            ch.props();
+            body.set(prods(p("P1", "【大螢膜PRO】Apple iPhone Duo 摺疊保護貼", 2380, 2380),
+                    p("P2", "Apple iPhone Duo 5G 一體成型-保護殼", 699, 699),
+                    p("P3", "Apple iPhone Duo 512GB 黑", 59900, 62900)));
+            List<String> tr = ms2.testProduct(rc, ex);
+            check("test marks reasons", tr.get(0).contains("含排除字") && tr.get(1).startsWith("✗") && tr.get(2).startsWith("✓"));
+            List<String[]> sent2 = Collections.synchronizedList(new ArrayList<>());
+            ms2.sender = (u, x) -> sent2.add(new String[]{u, x});
+            List<MonitorService.Hit> hx = ms2.runChannel(rc, "t9");
+            check("only phone notified", hx.size() == 1 && hx.get(0).item.title.contains("512GB"));
+
             // 清除已讀紀錄 → 商品基準也清除
             rc.clearSeen();
             check("clearSeen clears product state", !rc.hasProductBaseline("iPhone") && rc.lastPrice("iPhone", "A1") == null);
