@@ -97,8 +97,13 @@ final class SchedulePanel extends JPanel {
         body.add(Box.createVerticalStrut(10));
         body.add(row(baseline));
         ((JSpinner.DefaultEditor) maxAge.getEditor()).getTextField().setColumns(4);
-        body.add(row(new JLabel("只推播發布日期在"), maxAge,
-                new JLabel("天內的文章（0 = 不限；RSS 沒有提供日期的文章照常比對）")));
+        if (store.isProduct()) {
+            // 商品頻道：沒有發布日期；基準的意思不同
+            baseline.setText("每個商品第一次搜尋時只記錄現有商品、不通知新商品（低於設定價格仍會通知）");
+        } else {
+            body.add(row(new JLabel("只推播發布日期在"), maxAge,
+                    new JLabel("天內的文章（0 = 不限；RSS 沒有提供日期的文章照常比對）")));
+        }
 
         add(UiUtil.titled("排程方式", body), BorderLayout.NORTH);
 
@@ -277,7 +282,7 @@ final class SchedulePanel extends JPanel {
 
     private void clearSeen() {
         if (JOptionPane.showConfirmDialog(this,
-                "清除頻道「" + store.getName() + "」的已讀紀錄後，下次執行會把此頻道所有網站視為第一次抓取。確定清除？", "清除已讀紀錄",
+                "清除頻道「" + store.getName() + "」的已讀紀錄後，下次執行會把此頻道所有" + (store.isProduct() ? "商品" : "網站") + "視為第一次抓取。確定清除？", "清除已讀紀錄",
                 JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
         try {
             store.clearSeen();

@@ -22,6 +22,8 @@ logs/
 .lock
 channels/
 channel.properties
+products.tsv
+product-state.tsv
 backup-before-1.5/
 
 # ---- 作業系統／IDE ----

@@ -17,7 +17,7 @@ dir /s /b test\*.java > build\test-sources.txt
 "%JAVAC%" --release 17 -encoding UTF-8 -cp build\classes -d build\test-classes @build\test-sources.txt || goto :err
 
 set FAILED=0
-for %%T in (SelfTest V11Test V12Test V13Test V14Test V15Test ResetTest) do (
+for %%T in (SelfTest V11Test V12Test V13Test V14Test V15Test V16Test ResetTest) do (
   echo == %%T
   "%JAVA%" -Djava.awt.headless=true -Dstdout.encoding=UTF-8 -Xmx96m -cp build\classes;build\test-classes com.secnews.%%T || set FAILED=1
 )

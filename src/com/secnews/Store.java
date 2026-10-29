@@ -189,6 +189,10 @@ public final class Store {
 
     /** 新增頻道：網站與關鍵字空白，排程使用預設值（每 60 分鐘），推播啟用。 */
     public synchronized Channel createChannel(String name) throws IOException {
+        return createChannel(name, Channel.Type.NEWS);
+    }
+
+    public synchronized Channel createChannel(String name, Channel.Type type) throws IOException {
         if (name == null || name.isBlank()) throw new IllegalArgumentException("頻道名稱不可空白");
         if (channelNameExists(name, null)) throw new IllegalArgumentException("頻道名稱已存在：" + name.trim());
         int n = 1;
@@ -197,6 +201,12 @@ public final class Store {
         while (used.contains("c" + n) || Files.exists(channelsDir.resolve("c" + n))) n++;
         Channel c = new Channel(this, "c" + n, channelsDir.resolve("c" + n));
         c.setName(name);
+        if (type == Channel.Type.PRODUCT) {
+            c.setType(type);
+            ScheduleConfig sc = c.getSchedule();
+            sc.maxAgeDays = 0;           // 商品沒有發布日期
+            c.setSchedule(sc);
+        }
         channels.add(c);
         saveChannelOrder();
         return c;

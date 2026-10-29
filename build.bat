@@ -8,7 +8,7 @@ mkdir build\classes
 javac --release 8 -encoding UTF-8 -d build\classes src\com\secnews\Launcher.java || goto :err
 dir /s /b src\*.java | findstr /v /i "Launcher.java" > build\sources.txt
 javac --release 17 -encoding UTF-8 -d build\classes @build\sources.txt || goto :err
-(echo Main-Class: com.secnews.Launcher& echo Implementation-Version: 1.5.0)> build\MANIFEST.MF
+(echo Main-Class: com.secnews.Launcher& echo Implementation-Version: 1.6.0)> build\MANIFEST.MF
 jar --create --file SecNewsMonitor.jar --manifest build\MANIFEST.MF -C build\classes . || goto :err
 echo Done: SecNewsMonitor.jar
 pause

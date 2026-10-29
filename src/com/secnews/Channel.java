@@ -77,6 +77,128 @@ public final class Channel {
         saveProps();
     }
 
+    // ---------- 頻道類型 ----------
+    /** NEWS：新聞網站＋關鍵字；PRODUCT：購物網站商品監控（v1.6，目前支援 PChome 24h）。 */
+    public enum Type { NEWS, PRODUCT }
+
+    public synchronized Type getType() {
+        return "PRODUCT".equalsIgnoreCase(props.getProperty("type", "NEWS")) ? Type.PRODUCT : Type.NEWS;
+    }
+
+    public boolean isProduct() { return getType() == Type.PRODUCT; }
+
+    synchronized void setType(Type t) throws IOException {
+        props.setProperty("type", t.name());
+        saveProps();
+    }
+
+    // ---------- 商品監控 ----------
+    /** PChome 24h 搜尋介面（網站內部使用的 JSON 介面，非官方公開 API；網站改版時可在 channel.properties 修改）。 */
+    public static final String DEFAULT_PRODUCT_SEARCH_URL =
+            "https://ecshweb.pchome.com.tw/search/v3.3/all/results?q={q}&page=1&sort=new/dc";
+    public static final String DEFAULT_PRODUCT_LINK_URL = "https://24h.pchome.com.tw/prod/{id}";
+
+    public synchronized String getProductSearchUrl() {
+        return props.getProperty("product.searchUrl", DEFAULT_PRODUCT_SEARCH_URL);
+    }
+
+    public synchronized String getProductLinkUrl() {
+        return props.getProperty("product.linkUrl", DEFAULT_PRODUCT_LINK_URL);
+    }
+
+    /** 通知條件：new（新商品）、below（低於價格上限）、drop（降價）。 */
+    public synchronized boolean isNotify(String kind) {
+        return Boolean.parseBoolean(props.getProperty("product.notify." + kind, "true"));
+    }
+
+    public synchronized void setNotify(String kind, boolean on) throws IOException {
+        props.setProperty("product.notify." + kind, String.valueOf(on));
+        saveProps();
+    }
+
+    public synchronized List<ProductWatch> loadProducts() throws IOException {
+        List<ProductWatch> list = new ArrayList<>();
+        Path f = dir.resolve("products.tsv");
+        if (!Files.exists(f)) return list;
+        for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {
+            if (line.isBlank() || line.startsWith("#")) continue;
+            ProductWatch w = ProductWatch.fromLine(line);
+            if (w != null) list.add(w);
+        }
+        return list;
+    }
+
+    public synchronized void saveProducts(List<ProductWatch> list) throws IOException {
+        StringBuilder sb = new StringBuilder("# name\tquery\tmustContain\tmaxPrice(0=none)\tenabled\n");
+        for (ProductWatch w : list) sb.append(w.toLine()).append('\n');
+        Store.writeAtomic(dir.resolve("products.tsv"), sb.toString());
+    }
+
+    /** 商品上次看到的價格：鍵為「監控名稱<TAB>商品ID」。 */
+    private Map<String, Integer> productPrices;
+
+    private Map<String, Integer> prices() throws IOException {
+        if (productPrices != null) return productPrices;
+        productPrices = new LinkedHashMap<>();
+        Path f = dir.resolve("product-state.tsv");
+        if (Files.exists(f)) {
+            for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {
+                String[] p = line.split("\t", -1);
+                if (p.length < 3) continue;
+                try { productPrices.put(p[0] + "\t" + p[1], Integer.parseInt(p[2])); } catch (NumberFormatException ignored) {}
+            }
+        }
+        return productPrices;
+    }
+
+    /** 回傳上次價格；沒看過回傳 null。 */
+    public synchronized Integer lastPrice(String watch, String productId) throws IOException {
+        return prices().get(norm(watch) + "\t" + norm(productId));
+    }
+
+    public synchronized void setPrice(String watch, String productId, int price) throws IOException {
+        Map<String, Integer> m = prices();
+        String k = norm(watch) + "\t" + norm(productId);
+        m.remove(k);
+        m.put(k, price);       // 移到最後 = 最近
+    }
+
+    /** 每個監控項目最多保留最近 RECENT_EXTRA 個商品；刪除已不存在的監控項目。 */
+    public synchronized void pruneProducts(java.util.Collection<String> watchNames) throws IOException {
+        Map<String, Integer> m = prices();
+        Set<String> keep = new HashSet<>();
+        for (String w : watchNames) keep.add(norm(w));
+        Map<String, Integer> count = new java.util.HashMap<>();
+        List<String> keys = new ArrayList<>(m.keySet());
+        java.util.Collections.reverse(keys);       // 由新到舊
+        for (String k : keys) {
+            String w = k.substring(0, k.indexOf('\t'));
+            int c = count.merge(w, 1, Integer::sum);
+            if (!keep.contains(w) || c > RECENT_EXTRA) m.remove(k);
+        }
+    }
+
+    public synchronized boolean hasProductBaseline(String watch) {
+        return props.getProperty("product.baseline." + norm(watch)) != null;
+    }
+
+    public synchronized void markProductBaseline(String watch) {
+        props.setProperty("product.baseline." + norm(watch), "1");
+    }
+
+    public synchronized void flushProducts() throws IOException {
+        if (productPrices != null) {
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, Integer> e : productPrices.entrySet()) {
+                sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
+            }
+            Store.writeAtomic(dir.resolve("product-state.tsv"), sb.toString());
+        }
+        saveProps();
+    }
+
+    public synchronized int productStateCount() throws IOException { return prices().size(); }
+
     // ---------- Google Chat ----------
     public synchronized String getWebhookUrl() {
         javax.crypto.SecretKey k = store.sessionKey();
@@ -251,8 +373,11 @@ public final class Channel {
     public synchronized void clearSeen() throws IOException {
         legacySeen.clear();
         seenBySite.clear();
-        props.stringPropertyNames().stream().filter(k -> k.startsWith("site.baseline."))
+        props.stringPropertyNames().stream()
+                .filter(k -> k.startsWith("site.baseline.") || k.startsWith("product.baseline."))
                 .toList().forEach(props::remove);
+        productPrices = new LinkedHashMap<>();
+        Store.writeAtomic(dir.resolve("product-state.tsv"), "");
         flushSeen();
     }
 

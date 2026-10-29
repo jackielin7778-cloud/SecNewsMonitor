@@ -98,6 +98,19 @@ out=$(run --delete-channel "AI 新聞"); rc=$?; check "delete needs --yes" '[ $r
 out=$(run --delete-channel "AI 新聞" --yes); rc=$?; check "delete-channel" '[ $rc -eq 0 ] && [ ! -d "$C2" ]'
 out=$(run --delete-channel "資安新聞" --yes); rc=$?; check "cannot delete last channel" '[ $rc -eq 1 ]'
 
+# 5c. 商品監控頻道（本機假的搜尋 JSON）
+mkdir -p "$WORK/www/search"
+printf '{"prods":[{"Id":"A1","name":"Test Phone 256GB","price":9900,"originPrice":12900}]}' > "$WORK/www/search/results.json"
+out=$(run --add-channel "商品" --type product); rc=$?; check "add product channel" '[ $rc -eq 0 ] && [[ "$out" == *"products.tsv"* ]]'
+out=$(run --add-channel "x" --type bogus); rc=$?; check "bad --type rc2" '[ $rc -eq 2 ]'
+CP=$(ls -d "$SECNEWS_HOME"/channels/c* | tail -1)
+printf 'Phone\tTest Phone\t256GB\t10000\ttrue\n' > "$CP/products.tsv"
+printf 'chat.enabled=false\nproduct.searchUrl=http\://127.0.0.1\:%s/search/results.json?q\={q}\n' "$PORT" >> "$CP/channel.properties"
+out=$(SECNEWS_PASSWORD=$PW run --run-once --channel "商品"); rc=$?
+check "product run-once below threshold" '[ $rc -eq 0 ] && [[ "$out" == *"Test Phone 256GB"* ]] && [[ "$out" == *"通知 1 件"* ]]'
+out=$(run --status); check "status shows product channel" '[[ "$out" == *"商品監控（PChome 24h）"* ]] && [[ "$out" == *"上限 NT\$10000"* ]]'
+out=$(run --delete-channel "商品" --yes); rc=$?; check "delete product channel" '[ $rc -eq 0 ]'
+
 # 6. --headless 常駐、鎖、停止訊號
 SECNEWS_PASSWORD_FILE="$WORK/pw" "$RUN" --headless > "$WORK/daemon.log" 2>&1 &
 DPID=$!

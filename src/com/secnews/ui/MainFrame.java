@@ -32,7 +32,7 @@ public final class MainFrame extends JFrame {
     private Channel current;
     private SchedulePanel schedulePanel;
     private boolean switching;
-    private static final int CHANNEL_TABS = 4;
+    private int channelTabs;      // 目前頻道佔用的分頁數（新聞 4 個、商品 3 個）
 
     public MainFrame(Store store, MonitorService monitor, SchedulerService scheduler) {
         super("資安新聞監控 SecNewsMonitor " + com.secnews.AppInfo.versionLabel());
@@ -93,7 +93,7 @@ public final class MainFrame extends JFrame {
             @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
                                                                     boolean sel, boolean focus) {
                 super.getListCellRendererComponent(list, value, index, sel, focus);
-                if (value instanceof Channel c) setText(c.getName() + (c.isEnabled() ? "" : "（停用）"));
+                if (value instanceof Channel c) setText((c.isProduct() ? "［商品］" : "") + c.getName() + (c.isEnabled() ? "" : "（停用）"));
                 return this;
             }
         });
@@ -120,15 +120,24 @@ public final class MainFrame extends JFrame {
     /** 重建前 4 個分頁（屬於目前頻道的設定）。 */
     private void buildChannelTabs() {
         int sel = tabs.getSelectedIndex();
-        for (int i = 0; i < CHANNEL_TABS && tabs.getTabCount() > 0 && !(tabs.getComponentAt(0) instanceof LogPanel); i++) {
+        boolean onLog = sel >= 0 && tabs.getComponentAt(sel) instanceof LogPanel;
+        for (int i = 0; i < channelTabs && tabs.getTabCount() > 0 && !(tabs.getComponentAt(0) instanceof LogPanel); i++) {
             tabs.removeTabAt(0);
         }
         schedulePanel = new SchedulePanel(current, scheduler);
-        tabs.insertTab("網站列表", null, new SitesPanel(current, monitor), null, 0);
-        tabs.insertTab("監控關鍵字", null, new KeywordsPanel(current), null, 1);
-        tabs.insertTab("監控排程", null, schedulePanel, null, 2);
-        tabs.insertTab("Google Chat 設定", null, new ChatPanel(current, monitor), null, 3);
-        if (sel >= 0 && sel < tabs.getTabCount()) tabs.setSelectedIndex(sel);
+        int k = 0;
+        if (current.isProduct()) {
+            tabs.insertTab("商品清單", null, new ProductsPanel(current, monitor), null, k++);
+        } else {
+            tabs.insertTab("網站列表", null, new SitesPanel(current, monitor), null, k++);
+            tabs.insertTab("監控關鍵字", null, new KeywordsPanel(current), null, k++);
+        }
+        tabs.insertTab("監控排程", null, schedulePanel, null, k++);
+        tabs.insertTab("Google Chat 設定", null, new ChatPanel(current, monitor), null, k++);
+        channelTabs = k;
+        if (onLog) tabs.setSelectedIndex(k);
+        else if (sel >= 0 && sel < k) tabs.setSelectedIndex(sel);
+        else tabs.setSelectedIndex(0);
         channelEnabled.setSelected(current.isEnabled());
     }
 
@@ -167,16 +176,24 @@ public final class MainFrame extends JFrame {
 
     private void addChannel() {
         if (schedulePanel != null && !schedulePanel.confirmLeave()) return;
-        String name = askName("新增頻道", "頻道名稱（例如：AI 新聞）：", "", null);
+        Object[] types = {"新聞監控（網站＋關鍵字）", "商品監控（PChome 24h）"};
+        Object t = JOptionPane.showInputDialog(this, "頻道類型：", "新增頻道", JOptionPane.PLAIN_MESSAGE, null, types, types[0]);
+        if (t == null) return;
+        boolean product = t == types[1];
+        String name = askName("新增頻道", product ? "頻道名稱（例如：商品比價）：" : "頻道名稱（例如：AI 新聞）：", "", null);
         if (name == null) return;
         try {
-            Channel c = store.createChannel(name);
+            Channel c = store.createChannel(name, product ? Channel.Type.PRODUCT : Channel.Type.NEWS);
             AppLog.info("新增頻道：" + c.getName());
             channelModel.addElement(c);
             selectChannel(c);
             scheduler.reschedule(c);
             tabs.setSelectedIndex(0);
-            JOptionPane.showMessageDialog(this, "<html>已新增頻道「" + escape(c.getName()) + "」。接下來請設定：<br>"
+            JOptionPane.showMessageDialog(this, product
+                    ? "<html>已新增商品監控頻道「" + escape(c.getName()) + "」。接下來請設定：<br>"
+                    + "1. 商品清單：新增要監控的商品（搜尋關鍵字、價格上限），按「測試搜尋」確認<br>"
+                    + "2. 監控排程（建議每 30～60 分鐘）<br>3. Google Chat 設定：貼上要推播的聊天室 Webhook</html>"
+                    : "<html>已新增頻道「" + escape(c.getName()) + "」。接下來請設定：<br>"
                     + "1. 網站列表：新增網站，或按「匯入…」載入網站清單檔（例如 docs/ai-sites.tsv）<br>"
                     + "2. 監控關鍵字<br>3. 監控排程<br>4. Google Chat 設定：貼上這個頻道要推播的聊天室 Webhook</html>");
         } catch (Exception e) {

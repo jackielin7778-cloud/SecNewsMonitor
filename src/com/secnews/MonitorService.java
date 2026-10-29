@@ -14,6 +14,7 @@ public final class MonitorService {
 
     private final Store store;
     private final Fetcher fetcher;
+    private final ProductMonitor products;
     private final GoogleChatClient chat = new GoogleChatClient();
 
     /** 推播方式（測試時可替換成本機假伺服器）。 */
@@ -25,6 +26,7 @@ public final class MonitorService {
     MonitorService(Store store, Fetcher fetcher) {
         this.store = store;
         this.fetcher = fetcher;
+        this.products = new ProductMonitor(fetcher);
     }
 
     public static final class Hit {
@@ -56,6 +58,7 @@ public final class MonitorService {
         final String tag = "[" + ch.getName() + "] ";
         long start = System.currentTimeMillis();
         AppLog.info(tag + "開始監控（" + trigger + "）");
+        if (ch.isProduct()) return runProducts(ch, tag, start);
         List<Site> sites;
         KeywordMatcher matcher;
         try {
@@ -174,12 +177,38 @@ public final class MonitorService {
         return hits;
     }
 
+    private List<Hit> runProducts(Channel ch, String tag, long start) {
+        int[] okFail = new int[2];
+        List<Hit> hits;
+        try {
+            hits = products.run(ch, tag, ch.getSchedule().baselineFirstRun, okFail);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            AppLog.info(tag + "監控被中斷");
+            return List.of();
+        }
+        if (!hits.isEmpty()) notifyChat(ch, hits);
+        AppLog.info(tag + String.format("監控結束：成功 %d 個商品、失敗 %d 個、通知 %d 件，耗時 %.1f 秒",
+                okFail[0], okFail[1], hits.size(), (System.currentTimeMillis() - start) / 1000.0));
+        return hits;
+    }
+
+    /** 商品頻道的「測試搜尋」。 */
+    public List<String> testProduct(Channel ch, ProductWatch w) throws Exception {
+        List<String> out = new ArrayList<>();
+        for (ProductMonitor.Product p : products.search(ch, w)) {
+            out.add((w.accepts(p.name) ? "✓ " : "✗ ") + "NT$" + ProductMonitor.fmt(p.price) + "  " + p.name);
+        }
+        return out;
+    }
+
     private void notifyChat(Channel ch, List<Hit> hits) {
         String tag = "[" + ch.getName() + "] ";
         int max = ch.getMaxPushPerRun();
         List<Hit> pushed = hits.size() > max ? hits.subList(0, max) : hits;
         List<Hit> rest = hits.size() > max ? hits.subList(max, hits.size()) : List.of();
-        String text = format(ch.getName(), pushed, rest.size());
+        String text = ch.isProduct() ? formatProducts(ch.getName(), pushed, rest.size())
+                : format(ch.getName(), pushed, rest.size());
 
         if (!ch.isChatEnabled()) {
             AppLog.info(tag + "Google Chat 推播已關閉，命中文章如下：");
@@ -208,6 +237,22 @@ public final class MonitorService {
             AppLog.info("    • [" + String.join(", ", h.keywords) + "] " + h.item.title
                     + "（" + h.item.siteName + "）" + h.item.link);
         }
+    }
+
+    static String formatProducts(String channelName, List<Hit> hits, int omitted) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("🛒 *").append(channelName.replace('*', '＊')).append("* ")
+          .append(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")))
+          .append("｜共 ").append(hits.size() + omitted).append(" 件");
+        if (omitted > 0) sb.append("（以下列出 ").append(hits.size()).append(" 件）");
+        for (Hit h : hits) {
+            sb.append("\n\n*").append(h.item.title.replace('*', '＊')).append("*\n")
+              .append(h.item.summary).append("｜").append(String.join("、", h.keywords))
+              .append("｜監控：").append(h.item.siteName)
+              .append('\n').append(h.item.link);
+        }
+        if (omitted > 0) sb.append("\n\n…另有 ").append(omitted).append(" 件未列出，請到程式的「執行紀錄」查看。");
+        return sb.toString();
     }
 
     static String format(List<Hit> hits, int omitted) {

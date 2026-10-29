@@ -115,6 +115,13 @@ public class Fetcher {
         });
     }
 
+    /** 抓取 JSON／文字資料（暫時性錯誤會重試），上限 5 MB。 */
+    byte[] getWithRetry(String url, String label) throws IOException, InterruptedException {
+        try (InputStream in = new LimitedInputStream(open(url, FETCH_RETRIES, label), MAX_PAGE_BYTES)) {
+            return in.readAllBytes();
+        }
+    }
+
     byte[] get(String url) throws IOException, InterruptedException {
         try (InputStream in = new LimitedInputStream(open(url), MAX_PAGE_BYTES)) {
             return in.readAllBytes();

@@ -108,7 +108,8 @@ final class Cli {
                   run-linux.sh --set-webhook    變更 Google Chat Webhook
                   run-linux.sh --test-chat      傳送 Google Chat 測試訊息
                   run-linux.sh --status         顯示目前設定與所有頻道（不需密碼）
-                  run-linux.sh --add-channel 名稱          新增頻道（之後編輯該頻道的 sites.tsv、keywords.txt，
+                  run-linux.sh --add-channel 名稱 [--type product]  新增頻道；--type product 為 PChome 商品監控
+                                                           （之後編輯該頻道的 sites.tsv、keywords.txt 或 products.tsv，
                                                            再用 --set-webhook --channel 名稱 設定推播聊天室）
                   run-linux.sh --delete-channel 名稱 --yes 刪除頻道（含網站、關鍵字、Webhook、已讀紀錄）
                   run-linux.sh --version        顯示版本
@@ -152,6 +153,19 @@ final class Cli {
                     + (next != null && sc.enabled && ch.isEnabled() ? "（若現在啟動，下次執行 " + next.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) + "）" : ""));
             OUT.println("首次只建立基準：" + (sc.baselineFirstRun ? "是" : "否")
                     + "；只推播 " + (sc.maxAgeDays == 0 ? "不限天數" : sc.maxAgeDays + " 天內") + "的文章");
+            if (ch.isProduct()) {
+                List<ProductWatch> ps = ch.loadProducts();
+                OUT.println("類型          ：商品監控（PChome 24h）；通知："
+                        + (ch.isNotify("new") ? "新商品 " : "") + (ch.isNotify("below") ? "低於設定價格 " : "")
+                        + (ch.isNotify("drop") ? "降價" : ""));
+                OUT.println("商品          ：共 " + ps.size());
+                for (ProductWatch w : ps) {
+                    OUT.println("  " + (w.enabled ? "[✓]" : "[ ]") + " " + w.name + "  搜尋「" + w.query + "」"
+                            + (w.mustContain.isEmpty() ? "" : "  名稱需包含「" + w.mustContain + "」")
+                            + (w.maxPrice > 0 ? "  上限 NT$" + w.maxPrice : ""));
+                }
+                continue;
+            }
             OUT.println("關鍵字        ：" + String.join(", ", ch.loadKeywords()));
             OUT.println("網站          ：啟用 " + enabled + " / 共 " + sites.size());
             for (Site s : sites) {
@@ -168,11 +182,22 @@ final class Cli {
             return 2;
         }
         try {
-            Channel c = store.createChannel(name);
+            String type = value(args, "--type");
+            boolean product = type != null && type.equalsIgnoreCase("product");
+            if (type != null && !product && !type.equalsIgnoreCase("news")) {
+                ERR.println("--type 只能是 news 或 product");
+                return 2;
+            }
+            Channel c = store.createChannel(name, product ? Channel.Type.PRODUCT : Channel.Type.NEWS);
             AppLog.info("新增頻道：" + c.getName() + "（命令列）");
-            OUT.println("已新增頻道「" + c.getName() + "」（ID " + c.id() + "）");
-            OUT.println("網站列表：" + c.dir().resolve("sites.tsv"));
-            OUT.println("關鍵字  ：" + c.dir().resolve("keywords.txt"));
+            OUT.println("已新增" + (product ? "商品監控" : "") + "頻道「" + c.getName() + "」（ID " + c.id() + "）");
+            if (product) {
+                OUT.println("商品清單：" + c.dir().resolve("products.tsv")
+                        + "（每行：名稱<TAB>搜尋關鍵字<TAB>名稱需包含<TAB>價格上限<TAB>true）");
+            } else {
+                OUT.println("網站列表：" + c.dir().resolve("sites.tsv"));
+                OUT.println("關鍵字  ：" + c.dir().resolve("keywords.txt"));
+            }
             OUT.println("排程等設定：" + c.dir().resolve("channel.properties") + "（預設每 60 分鐘）");
             OUT.println("接著設定推播聊天室：--set-webhook --channel \"" + c.getName() + "\"");
             return 0;
