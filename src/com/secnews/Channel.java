@@ -95,7 +95,7 @@ public final class Channel {
     // ---------- 商品監控 ----------
     /** PChome 24h 搜尋介面（網站內部使用的 JSON 介面，非官方公開 API；網站改版時可在 channel.properties 修改）。 */
     public static final String DEFAULT_PRODUCT_SEARCH_URL =
-            "https://ecshweb.pchome.com.tw/search/v3.3/all/results?q={q}&page=1&sort=new/dc";
+            "https://ecshweb.pchome.com.tw/search/v3.3/all/results?q={q}&page={page}&sort=rnk/dc";
     public static final String DEFAULT_PRODUCT_LINK_URL = "https://24h.pchome.com.tw/prod/{id}";
 
     public synchronized String getProductSearchUrl() {

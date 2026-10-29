@@ -55,8 +55,10 @@ final class ProductMonitor {
                 List<Product> found = search(ch, w);
                 boolean firstTime = baseline && !ch.hasProductBaseline(w.name);
                 int matched = 0, n0 = hits.size();
+                Map<String, Integer> rejected = new java.util.LinkedHashMap<>();
                 for (Product p : found) {
-                    if (!w.accepts(p.name, p.price)) continue;
+                    String why = w.rejectReason(p.name, p.price);
+                    if (why != null) { rejected.merge(why, 1, Integer::sum); continue; }
                     matched++;
                     Integer last = ch.lastPrice(w.name, p.id);
                     List<String> reasons = new ArrayList<>();
@@ -79,9 +81,14 @@ final class ProductMonitor {
                 }
                 ch.markProductBaseline(w.name);
                 okFail[0]++;
-                AppLog.info(tag + "  ✓ " + w.name + "：搜尋到 " + found.size() + " 件，符合名稱條件 " + matched + " 件"
-                        + (firstTime ? "（首次執行，已建立基準，只通知低於設定價格的商品）" : "")
-                        + "，通知 " + (hits.size() - n0) + " 件");
+                StringBuilder why = new StringBuilder();
+                for (Map.Entry<String, Integer> e : rejected.entrySet()) {
+                    why.append(why.length() == 0 ? "（排除：" : "、").append(e.getKey()).append(" ").append(e.getValue()).append(" 件");
+                }
+                if (why.length() > 0) why.append("）");
+                AppLog.info(tag + "  ✓ " + w.name + "：搜尋到 " + found.size() + " 件，符合條件 " + matched + " 件" + why
+                        + (firstTime ? "；首次執行，已建立基準，只通知低於設定價格的商品" : "")
+                        + "；通知 " + (hits.size() - n0) + " 件");
             } catch (InterruptedException e) {
                 throw e;
             } catch (Exception e) {
@@ -98,12 +105,30 @@ final class ProductMonitor {
         return hits;
     }
 
-    /** 搜尋一個監控項目（「測試搜尋」也用這個）。 */
+    /** 最多抓幾頁搜尋結果（PChome 每頁 20 件）。 */
+    static final int MAX_PAGES = 5;
+    /** 兩頁之間的間隔（毫秒）。 */
+    static long pageDelayMs = 1000;
+
+    /**
+     * 搜尋一個監控項目（「測試搜尋」也用這個）。網址含 {page} 時最多抓 MAX_PAGES 頁，
+     * 某頁沒有新商品或少於 20 件就停止。
+     */
     List<Product> search(Channel ch, ProductWatch w) throws Exception {
-        String url = ch.getProductSearchUrl().replace("{q}", URLEncoder.encode(w.query, StandardCharsets.UTF_8).replace("+", "%20"));
-        checkRobots(url);
-        byte[] body = fetcher.getWithRetry(url, w.name);
-        return parse(new String(body, StandardCharsets.UTF_8));
+        String tpl = ch.getProductSearchUrl().replace("{q}", URLEncoder.encode(w.query, StandardCharsets.UTF_8).replace("+", "%20"));
+        boolean paged = tpl.contains("{page}");
+        List<Product> all = new ArrayList<>();
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        for (int page = 1; page <= (paged ? MAX_PAGES : 1); page++) {
+            String url = tpl.replace("{page}", String.valueOf(page));
+            checkRobots(url);
+            if (page > 1) Thread.sleep(pageDelayMs);
+            List<Product> got = parse(new String(fetcher.getWithRetry(url, w.name), StandardCharsets.UTF_8));
+            int added = 0;
+            for (Product p : got) if (ids.add(p.id)) { all.add(p); added++; }
+            if (got.size() < 20 || added == 0) break;
+        }
+        return all;
     }
 
     private void checkRobots(String url) throws Exception {

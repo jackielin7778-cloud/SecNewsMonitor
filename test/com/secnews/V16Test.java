@@ -60,6 +60,15 @@ public class V16Test {
             ex.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
             ex.sendResponseHeaders(200, b.length); ex.getResponseBody().write(b); ex.close();
         });
+        srv.createContext("/paged/", ex -> {
+            String q = ex.getRequestURI().getQuery();
+            int page = Integer.parseInt(q.replaceAll(".*page=(\\d+).*", "$1"));
+            List<String> items = new ArrayList<>();
+            if (page == 1) for (int i = 0; i < 20; i++) items.add(p("A" + i, "Duo 保護貼 " + i, 500 + i, 500));
+            else if (page == 2) { items.add(p("PH", "Apple iPhone Duo 512GB", 59900, 62900)); items.add(p("A0", "Duo 保護貼 0", 500, 500)); }
+            byte[] b = prods(items.toArray(new String[0])).getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, b.length); ex.getResponseBody().write(b); ex.close();
+        });
         srv.start();
         try {
             Path dir = Files.createTempDirectory("v16");
@@ -180,6 +189,16 @@ public class V16Test {
             ms2.sender = (u, x) -> sent2.add(new String[]{u, x});
             List<MonitorService.Hit> hx = ms2.runChannel(rc, "t9");
             check("only phone notified", hx.size() == 1 && hx.get(0).item.title.contains("512GB"));
+
+            // 多頁搜尋：第 1 頁都是配件，手機在第 2 頁
+            ProductMonitor.pageDelayMs = 0;
+            rc.props().setProperty("product.searchUrl", base + "/paged/results?q={q}&page={page}&sort=rnk/dc");
+            List<String> pg = ms2.testProduct(rc, ex);
+            check("paged search finds page 2, got " + pg.size(), pg.size() == 21 && pg.stream().anyMatch(x -> x.startsWith("✓") && x.contains("512GB")));
+            logs.clear();
+            rc.clearSeen();
+            ms2.runChannel(rc, "t10");
+            check("log shows reject reasons", logs.stream().anyMatch(l -> l.contains("排除：含排除字「保護貼」 20 件")));
 
             // 清除已讀紀錄 → 商品基準也清除
             rc.clearSeen();
