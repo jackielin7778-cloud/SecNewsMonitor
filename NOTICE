@@ -1,0 +1,14 @@
+SecNewsMonitor
+Copyright (c) 2026 GateWeb (關網資訊). All rights reserved.
+（授權方式尚未決定；在決定前，請勿對外散布。）
+
+第三方元件
+----------
+本程式只使用 Java 標準函式庫（java.*、javax.*），不包含任何第三方函式庫。
+執行時需要 Java 17 以上的 OpenJDK 發行版（例如 Eclipse Temurin），
+OpenJDK 以 GPLv2 with Classpath Exception 授權；本發佈檔不包含 JDK。
+自動測試使用 JDK 內建的 com.sun.net.httpserver（不包含在發佈的 jar 中）。
+
+新聞內容
+--------
+推播的標題、連結與內文片段屬於各新聞網站，請遵守各網站的使用條款。
