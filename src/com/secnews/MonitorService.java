@@ -34,10 +34,14 @@ public final class MonitorService {
         final List<String> keywords;
         /** 全文比對命中時的內文片段；標題命中時為空字串。 */
         final String snippet;
+        /** 商品頻道：推播失敗時把價格／庫存紀錄還原（v1.7.1）。 */
+        Restore restore;
         Hit(FeedItem item, List<String> keywords, String snippet) {
             this.item = item; this.keywords = keywords; this.snippet = snippet;
         }
     }
+
+    interface Restore { void run() throws Exception; }
 
     /** 執行第一個頻道一次（相容舊版與測試用）。 */
     public List<Hit> runOnce(String trigger) {
@@ -161,7 +165,10 @@ public final class MonitorService {
             }
         }
 
-        if (!hits.isEmpty()) notifyChat(ch, hits);
+        if (!hits.isEmpty()) {
+            List<Hit> undelivered = notifyChat(ch, hits);
+            for (Hit h : undelivered) ch.unmarkSeen(h.item.siteName, h.item.key());   // 下次執行再推播
+        }
         List<String> allNames = new ArrayList<>();
         for (Site s : sites) allNames.add(s.name);
         ch.pruneSeenSites(allNames);
@@ -187,7 +194,19 @@ public final class MonitorService {
             AppLog.info(tag + "監控被中斷");
             return List.of();
         }
-        if (!hits.isEmpty()) notifyChat(ch, hits);
+        if (!hits.isEmpty()) {
+            List<Hit> undelivered = notifyChat(ch, hits);
+            for (Hit h : undelivered) {
+                if (h.restore != null) {
+                    try { h.restore.run(); } catch (Exception e) { AppLog.error(tag + "還原商品紀錄失敗", e); }
+                }
+            }
+        }
+        try {
+            ch.flushProducts();
+        } catch (Exception e) {
+            AppLog.error(tag + "儲存商品紀錄失敗", e);
+        }
         AppLog.info(tag + String.format("監控結束：成功 %d 個商品、失敗 %d 個、通知 %d 件，耗時 %.1f 秒",
                 okFail[0], okFail[1], hits.size(), (System.currentTimeMillis() - start) / 1000.0));
         return hits;
@@ -216,7 +235,11 @@ public final class MonitorService {
         return out;
     }
 
-    private void notifyChat(Channel ch, List<Hit> hits) {
+    /**
+     * 推播命中結果；回傳「沒有送出、下次執行應再推播」的項目（v1.7.1）：
+     * 推播失敗 → 全部；超過單次上限 → 超過的部分。推播關閉或未設定 Webhook → 空（只記錄）。
+     */
+    private List<Hit> notifyChat(Channel ch, List<Hit> hits) {
         String tag = "[" + ch.getName() + "] ";
         int max = ch.getMaxPushPerRun();
         List<Hit> pushed = hits.size() > max ? hits.subList(0, max) : hits;
@@ -227,22 +250,24 @@ public final class MonitorService {
         if (!ch.isChatEnabled()) {
             AppLog.info(tag + "Google Chat 推播已關閉，命中文章如下：");
             logTitles(hits);
-            return;
+            return List.of();
         }
         if (!ch.hasWebhook()) {
             AppLog.info(tag + "[警告] 此頻道尚未設定 Google Chat Webhook，命中文章如下：");
             logTitles(hits);
-            return;
+            return List.of();
         }
         try {
             sender.send(ch.getWebhookUrl(), text);
             AppLog.info(tag + "已推播 " + pushed.size() + " 則到 Google Chat"
-                    + (rest.isEmpty() ? "" : "（另有 " + rest.size() + " 則超過單次上限 " + max + " 則，只記錄在下方）"));
+                    + (rest.isEmpty() ? "" : "（另有 " + rest.size() + " 則超過單次上限 " + max + " 則，下次執行再推播）"));
             if (!rest.isEmpty()) logTitles(rest);
+            return new ArrayList<>(rest);
         } catch (Exception e) {
-            AppLog.error(tag + "推播到 Google Chat 失敗", e);
+            AppLog.error(tag + "推播到 Google Chat 失敗（下次執行會再推播）", e);
             AppLog.info(tag + "未推播的命中文章如下：");
             logTitles(hits);
+            return new ArrayList<>(hits);
         }
     }
 
@@ -253,17 +278,29 @@ public final class MonitorService {
         }
     }
 
+    /** 標題、商品名稱最多保留的字數。 */
+    static final int TITLE_MAX = 300;
+    /** 內文片段最多保留的字數。 */
+    static final int SNIPPET_MAX = 300;
+
+    /** 連結：合格輸出網址，不合格輸出說明（不輸出原始內容）。 */
+    private static String linkLine(String link) {
+        String l = ChatText.link(link);
+        return l.isEmpty() ? "（連結格式不符，已略過）" : l;
+    }
+
+    /** v1.7.1：所有來自外部的文字都經過 ChatText 處理，避免 Chat 訊息注入。 */
     static String formatProducts(String channelName, List<Hit> hits, int omitted) {
         StringBuilder sb = new StringBuilder();
-        sb.append("🛒 *").append(channelName.replace('*', '＊')).append("* ")
+        sb.append("🛒 *").append(ChatText.oneLine(channelName, 100)).append("* ")
           .append(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")))
           .append("｜共 ").append(hits.size() + omitted).append(" 件");
         if (omitted > 0) sb.append("（以下列出 ").append(hits.size()).append(" 件）");
         for (Hit h : hits) {
-            sb.append("\n\n*").append(h.item.title.replace('*', '＊')).append("*\n")
-              .append(h.item.summary).append("｜").append(String.join("、", h.keywords))
-              .append("｜監控：").append(h.item.siteName)
-              .append('\n').append(h.item.link);
+            sb.append("\n\n*").append(ChatText.oneLine(h.item.title, TITLE_MAX)).append("*\n")
+              .append(ChatText.oneLine(h.item.summary, 200)).append("｜").append(ChatText.oneLine(String.join("、", h.keywords), 200))
+              .append("｜監控：").append(ChatText.oneLine(h.item.siteName, 100))
+              .append('\n').append(linkLine(h.item.link));
         }
         if (omitted > 0) sb.append("\n\n…另有 ").append(omitted).append(" 件未列出，請到程式的「執行紀錄」查看。");
         return sb.toString();
@@ -275,19 +312,19 @@ public final class MonitorService {
 
     static String format(String channelName, List<Hit> hits, int omitted) {
         StringBuilder sb = new StringBuilder();
-        sb.append("🔔 *").append(channelName.replace('*', '＊')).append("* ")
+        sb.append("🔔 *").append(ChatText.oneLine(channelName, 100)).append("* ")
           .append(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")))
           .append("｜共 ").append(hits.size() + omitted).append(" 則");
         if (omitted > 0) sb.append("（以下列出 ").append(hits.size()).append(" 則）");
         for (Hit h : hits) {
-            sb.append("\n\n*").append(h.item.title.replace('*', '＊')).append("*\n")
-              .append("來源：").append(h.item.siteName)
-              .append("｜關鍵字：").append(String.join(", ", h.keywords));
+            sb.append("\n\n*").append(ChatText.oneLine(h.item.title, TITLE_MAX)).append("*\n")
+              .append("來源：").append(ChatText.oneLine(h.item.siteName, 100))
+              .append("｜關鍵字：").append(ChatText.oneLine(String.join(", ", h.keywords), 200));
             if (h.item.published != null) {
                 sb.append("｜發布：").append(java.time.LocalDate.ofInstant(h.item.published, java.time.ZoneId.systemDefault()));
             }
-            if (!h.snippet.isEmpty()) sb.append("（內文命中）\n").append("內文：").append(h.snippet.replace('*', '＊'));
-            sb.append('\n').append(h.item.link);
+            if (!h.snippet.isEmpty()) sb.append("（內文命中）\n").append("內文：").append(ChatText.oneLine(h.snippet, SNIPPET_MAX));
+            sb.append('\n').append(linkLine(h.item.link));
         }
         if (omitted > 0) {
             sb.append("\n\n…另有 ").append(omitted).append(" 則符合關鍵字的文章未列出，請到程式的「執行紀錄」查看。");

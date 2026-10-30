@@ -93,6 +93,7 @@ public final class MainFrame extends JFrame {
             @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
                                                                     boolean sel, boolean focus) {
                 super.getListCellRendererComponent(list, value, index, sel, focus);
+                putClientProperty("html.disable", Boolean.TRUE);
                 if (value instanceof Channel c) setText((c.isProduct() ? "［商品］" : "") + c.getName() + (c.isEnabled() ? "" : "（停用）"));
                 return this;
             }

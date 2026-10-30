@@ -31,7 +31,12 @@ public final class Store {
     private final Path dir;
     private final Path configFile, channelsDir, logsDir;
     private Properties config = new Properties();
-    private SecretKey sessionKey;              // 登入成功後才有，用來加解密 Webhook
+    /**
+     * 登入成功後才有，用來加解密 Webhook。
+     * v1.7.1：改為 volatile、讀取不加鎖。原本 Channel.getWebhookUrl（持有頻道鎖）會再去取 Store 鎖，
+     * 而 changePassword／resetAccount（持有 Store 鎖）會去取頻道鎖，兩者同時發生會死結。
+     */
+    private volatile SecretKey sessionKey;
     private final List<Channel> channels = new ArrayList<>();
 
     public Store() throws IOException {
@@ -121,15 +126,50 @@ public final class Store {
     }
 
     public synchronized void createAccount(String user, char[] password) throws IOException {
+        Pending p = prepareAccount(user, password);
+        commitAccount(p);
+    }
+
+    /** 新帳號資料（尚未寫入）。 */
+    private static final class Pending {
+        final Properties values = new Properties();
+        SecretKey key;
+    }
+
+    private static Pending prepareAccount(String user, char[] password) {
+        Pending p = new Pending();
         byte[] salt = Crypto.randomBytes(16);
         byte[] keySalt = Crypto.randomBytes(16);
-        config.setProperty("account.user", user);
-        config.setProperty("account.salt", Crypto.b64(salt));
-        config.setProperty("account.iterations", String.valueOf(Crypto.ITERATIONS));
-        config.setProperty("account.hash", Crypto.b64(Crypto.pbkdf2(password, salt, Crypto.ITERATIONS, 256)));
-        config.setProperty("account.keySalt", Crypto.b64(keySalt));
-        sessionKey = Crypto.deriveKey(password, keySalt);
-        saveConfig();
+        p.values.setProperty("account.user", user);
+        p.values.setProperty("account.salt", Crypto.b64(salt));
+        p.values.setProperty("account.iterations", String.valueOf(Crypto.ITERATIONS));
+        p.values.setProperty("account.hash", Crypto.b64(Crypto.pbkdf2(password, salt, Crypto.ITERATIONS, 256)));
+        p.values.setProperty("account.keySalt", Crypto.b64(keySalt));
+        p.values.setProperty("account.keyIterations", String.valueOf(Crypto.ITERATIONS));
+        p.key = Crypto.deriveKey(password, keySalt, Crypto.ITERATIONS);
+        return p;
+    }
+
+    private void commitAccount(Pending p) throws IOException {
+        Properties backup = (Properties) config.clone();
+        config.stringPropertyNames().stream().filter(k -> k.startsWith("account.")).toList().forEach(config::remove);
+        config.putAll(p.values);
+        try {
+            saveConfig();
+        } catch (IOException e) {
+            config = backup;
+            throw e;
+        }
+        sessionKey = p.key;
+    }
+
+    /** 加密金鑰的 PBKDF2 次數（v1.7.1 以前固定 210,000 次，未記錄在設定檔）。 */
+    private int keyIterations() {
+        try {
+            return Integer.parseInt(config.getProperty("account.keyIterations", String.valueOf(Crypto.LEGACY_ITERATIONS)));
+        } catch (NumberFormatException e) {
+            return Crypto.LEGACY_ITERATIONS;
+        }
     }
 
     /** 驗證帳密；成功時同時推導出加密金鑰。 */
@@ -140,10 +180,23 @@ public final class Store {
             return false;
         }
         byte[] salt = Crypto.unb64(config.getProperty("account.salt"));
-        int it = Integer.parseInt(config.getProperty("account.iterations", String.valueOf(Crypto.ITERATIONS)));
+        int it = Integer.parseInt(config.getProperty("account.iterations", String.valueOf(Crypto.LEGACY_ITERATIONS)));
         byte[] hash = Crypto.unb64(config.getProperty("account.hash"));
         if (!Crypto.verify(password, salt, it, hash)) return false;
-        sessionKey = Crypto.deriveKey(password, Crypto.unb64(config.getProperty("account.keySalt")));
+        sessionKey = Crypto.deriveKey(password, Crypto.unb64(config.getProperty("account.keySalt")), keyIterations());
+        try {
+            for (Channel c : channels) c.resolvePendingWebhook(sessionKey);     // 上次變更密碼中途中斷時的收尾
+        } catch (Exception e) {
+            AppLog.error("整理 Webhook 加密資料失敗", e);
+        }
+        if (it < Crypto.ITERATIONS || keyIterations() < Crypto.ITERATIONS) {
+            try {
+                changePassword(password);           // 自動升級為較高的 PBKDF2 次數（密碼不變）
+                AppLog.info("密碼雜湊已升級為 PBKDF2 " + Crypto.ITERATIONS + " 次");
+            } catch (Exception e) {
+                AppLog.error("升級密碼雜湊失敗（不影響使用）", e);
+            }
+        }
         return true;
     }
 
@@ -160,12 +213,30 @@ public final class Store {
         for (Channel c : channels) c.clearWebhook();
     }
 
-    /** 變更密碼：重新雜湊，並用新金鑰重新加密每個頻道的 Webhook。 */
+    /** 重設帳號並立即建立新帳號（命令列 --setup --reset：先確認新帳密有效才清除舊帳號）。 */
+    public synchronized void resetAndCreateAccount(String user, char[] password) throws IOException {
+        resetAccount();
+        createAccount(user, password);
+    }
+
+    /**
+     * 變更密碼：重新雜湊，並用新金鑰重新加密每個頻道的 Webhook。
+     * v1.7.1：分三階段，任何一步中斷都不會讓 Webhook 無法解密：
+     *   1. 每個頻道先把新金鑰加密的 Webhook 寫到暫存欄位（原本的保留）
+     *   2. 寫入新的帳號資料（原子寫入）
+     *   3. 每個頻道把暫存欄位換成正式欄位
+     * 若在 2 之前中斷：舊密碼仍有效、暫存欄位在下次登入時丟棄；
+     * 若在 2 之後、3 之前中斷：新密碼有效，下次登入時用新金鑰把暫存欄位換成正式欄位。
+     */
     public synchronized void changePassword(char[] newPassword) throws IOException {
         java.util.Map<Channel, String> hooks = new java.util.LinkedHashMap<>();
         for (Channel c : channels) if (c.hasWebhook()) hooks.put(c, c.getWebhookUrl());
-        createAccount(accountUser(), newPassword);
-        for (java.util.Map.Entry<Channel, String> e : hooks.entrySet()) e.getKey().setWebhookUrl(e.getValue());
+        Pending p = prepareAccount(accountUser(), newPassword);
+        for (java.util.Map.Entry<Channel, String> e : hooks.entrySet()) {
+            e.getKey().stagePendingWebhook(Crypto.encrypt(p.key, e.getValue()));
+        }
+        commitAccount(p);
+        for (Channel c : hooks.keySet()) c.resolvePendingWebhook(p.key);
     }
 
     // ---------- 頻道 ----------
@@ -234,7 +305,7 @@ public final class Store {
         saveConfig();
     }
 
-    synchronized SecretKey sessionKey() { return sessionKey; }
+    SecretKey sessionKey() { return sessionKey; }
 
     /** 讀取頻道列表；第一次使用（或由舊版升級）時建立「資安新聞」頻道並轉移舊設定。 */
     private void loadChannels() throws IOException {

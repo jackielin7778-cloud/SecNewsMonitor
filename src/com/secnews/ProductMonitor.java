@@ -105,10 +105,13 @@ final class ProductMonitor {
                     ch.setPrice(w.name, sid, p.price);
                     ch.setStock(w.name, sid, p.inStock);
                     if (!reasons.isEmpty()) {
+                        final String wn = w.name;
                         String priceText = "NT$" + fmt(p.price)
                                 + (p.originPrice > p.price ? "（原價 NT$" + fmt(p.originPrice) + "）" : "")
                                 + "｜" + siteLabel(site) + (Boolean.FALSE.equals(p.inStock) ? "（缺貨）" : "");
-                        hits.add(new MonitorService.Hit(new FeedItem(w.name, p.name, linkOf(ch, p), priceText), reasons, ""));
+                        MonitorService.Hit hit = new MonitorService.Hit(new FeedItem(w.name, p.name, linkOf(ch, p), priceText), reasons, "");
+                        hit.restore = () -> ch.restoreProduct(wn, sid, last, lastStock);   // 推播失敗時還原（v1.7.1）
+                        hits.add(hit);
                     }
                 }
                 ch.markProductBaseline(baseKey);
@@ -130,10 +133,9 @@ final class ProductMonitor {
             }
         }
         try {
-            ch.pruneProducts(names);
-            ch.flushProducts();
+            ch.pruneProducts(names);       // 寫入檔案由 MonitorService 在推播之後進行（v1.7.1）
         } catch (Exception e) {
-            AppLog.error(tag + "儲存商品紀錄失敗", e);
+            AppLog.error(tag + "整理商品紀錄失敗", e);
         }
         return hits;
     }
@@ -211,7 +213,9 @@ final class ProductMonitor {
             List<String> ids = parseRutenSearch(get(tpl.replace("{offset}", String.valueOf((page - 1) * 60 + 1)), w.name));
             if (ids.isEmpty()) return List.of();
             Thread.sleep(pageDelayMs);
-            return parseRutenProds(get(prodTpl.replace("{ids}", String.join(",", ids)), w.name));
+            List<String> encIds = new ArrayList<>();
+            for (String id : ids) encIds.add(enc(id));                        // 外部資料：編碼後才放進網址（v1.7.1）
+            return parseRutenProds(get(prodTpl.replace("{ids}", String.join(",", encIds)), w.name));
         });
     }
 
@@ -274,17 +278,15 @@ final class ProductMonitor {
         return out;
     }
 
-    private static final java.util.regex.Pattern LD_JSON = java.util.regex.Pattern.compile(
-            "(?is)<script[^>]*type=[\"']application/ld\\+json[\"'][^>]*>(.*?)</script>");
+    private static final java.util.regex.Pattern I_CODE = java.util.regex.Pattern.compile("[?&]i_code=([0-9A-Za-z_-]{1,40})");
 
     /** momo：搜尋頁的 schema.org ItemList（JSON-LD）。 */
     static List<Product> parseMomo(String html) {
-        java.util.regex.Matcher m = LD_JSON.matcher(html);
         boolean anyLd = false;
-        while (m.find()) {
+        for (String block : HtmlScan.ldJsonBlocks(html)) {      // v1.7.1：線性掃描，取代 regex
             anyLd = true;
             Object root;
-            try { root = MiniJson.parse(m.group(1).trim()); } catch (IllegalArgumentException e) { continue; }
+            try { root = MiniJson.parse(block.trim()); } catch (IllegalArgumentException e) { continue; }
             List<?> items = findItemList(root, 0);
             if (items == null) continue;
             List<Product> out = new ArrayList<>();
@@ -304,7 +306,7 @@ final class ProductMonitor {
                     if (av.endsWith("instock") || av.endsWith("limitedavailability")) stock = true;
                     else if (av.endsWith("outofstock") || av.endsWith("soldout") || av.endsWith("discontinued")) stock = false;
                 }
-                java.util.regex.Matcher ic = java.util.regex.Pattern.compile("[?&]i_code=([^&#]+)").matcher(url);
+                java.util.regex.Matcher ic = I_CODE.matcher(url);
                 String id = ic.find() ? ic.group(1) : url;
                 if (id.isEmpty() || name.isEmpty() || price <= 0) continue;
                 Product p = new Product(id, Fetcher.stripTags(name).trim(), price, 0);

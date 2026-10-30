@@ -16,7 +16,10 @@ import java.util.Base64;
  * 只用 JDK 內建 API，不需第三方套件。
  */
 public final class Crypto {
-    public static final int ITERATIONS = 210_000;
+    /** PBKDF2 次數（v1.7.1 起依 OWASP 建議提高為 600,000；舊帳號登入時自動升級）。 */
+    public static final int ITERATIONS = 600_000;
+    /** v1.7.0 以前使用的次數。 */
+    public static final int LEGACY_ITERATIONS = 210_000;
     private static final SecureRandom RNG = new SecureRandom();
 
     private Crypto() {}
@@ -46,8 +49,8 @@ public final class Crypto {
     }
 
     /** 由登入密碼推導出加密金鑰（與密碼雜湊使用不同的 salt）。 */
-    public static SecretKey deriveKey(char[] password, byte[] salt) {
-        return new SecretKeySpec(pbkdf2(password, salt, ITERATIONS, 256), "AES");
+    public static SecretKey deriveKey(char[] password, byte[] salt, int iterations) {
+        return new SecretKeySpec(pbkdf2(password, salt, iterations, 256), "AES");
     }
 
     public static String encrypt(SecretKey key, String plain) {

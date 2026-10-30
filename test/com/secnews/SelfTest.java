@@ -60,7 +60,12 @@ public class SelfTest {
         List<FeedItem> ai = Fetcher.parseFeed(site, atom.getBytes(StandardCharsets.UTF_8));
         check("atom", ai.size()==1 && ai.get(0).link.equals("https://ex.com/a"));
         String xxe = "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><rss><channel><item><title>&x;</title></item></channel></rss>";
-        boolean blocked; try { Fetcher.parseFeed(site, xxe.getBytes()); blocked = false; } catch (Exception e) { blocked = true; }
+        // v1.7.1：未宣告的實體改成字面文字（不讓整個 RSS 失敗）；只要沒有讀到外部檔案即為阻擋成功
+        boolean blocked;
+        try {
+            List<FeedItem> xi = Fetcher.parseFeed(site, xxe.getBytes());
+            blocked = xi.isEmpty() || !xi.get(0).title.contains("root:");
+        } catch (Exception e) { blocked = true; }
         check("xxe blocked", blocked);
 
         // --- HTML ---

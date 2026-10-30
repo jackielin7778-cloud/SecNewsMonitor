@@ -24,11 +24,17 @@ public final class LoginDialog extends JDialog {
     private int fails;
     private long lockedUntil;
 
-    public LoginDialog(Store store) {
+    /** 重設帳號模式：建立新帳號成功時才清除舊帳號（v1.7.1）。 */
+    private final boolean resetMode;
+
+    public LoginDialog(Store store) { this(store, false); }
+
+    public LoginDialog(Store store, boolean resetMode) {
         super((Frame) null, "資安新聞監控 " + com.secnews.AppInfo.versionLabel() + " - "
-                + (store.hasAccount() ? "登入" : "建立帳號"), true);
+                + (store.hasAccount() && !resetMode ? "登入" : resetMode ? "重設帳號" : "建立帳號"), true);
         this.store = store;
-        this.setupMode = !store.hasAccount();
+        this.resetMode = resetMode && store.hasAccount();
+        this.setupMode = !store.hasAccount() || this.resetMode;
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
 
         JPanel form = new JPanel(new GridBagLayout());
@@ -37,7 +43,8 @@ public final class LoginDialog extends JDialog {
         c.insets = new Insets(5, 4, 5, 4);
         c.anchor = GridBagConstraints.WEST;
 
-        JLabel title = new JLabel(setupMode ? "第一次使用，請建立管理員帳號" : "請輸入帳號密碼");
+        JLabel title = new JLabel(resetMode ? "重設帳號：請建立新的管理員帳號（按取消則保留原帳號）"
+                : setupMode ? "第一次使用，請建立管理員帳號" : "請輸入帳號密碼");
         title.setFont(title.getFont().deriveFont(Font.BOLD, title.getFont().getSize() + 2f));
         c.gridx = 0; c.gridy = 0; c.gridwidth = 2;
         form.add(title, c);
@@ -118,6 +125,11 @@ public final class LoginDialog extends JDialog {
         new SwingWorker<Boolean, Void>() {
             @Override protected Boolean doInBackground() throws Exception {
                 try {
+                    if (resetMode) {
+                        store.resetAndCreateAccount(user, pw);
+                        AppLog.info("帳號已重設（忘記密碼），Google Chat Webhook 已清除，需重新設定");
+                        return true;
+                    }
                     if (setupMode) { store.createAccount(user, pw); return true; }
                     return store.login(user, pw);
                 } finally {
@@ -154,7 +166,7 @@ public final class LoginDialog extends JDialog {
         String msg = "<html><b>密碼無法找回，只能重設帳號。</b><br><br>"
                 + "會刪除：帳號密碼、已儲存的 Google Chat Webhook（需重新貼上）<br>"
                 + "會保留：網站列表、關鍵字、排程、已讀紀錄、執行紀錄<br><br>"
-                + "重設後會出現「建立帳號」畫面。<br><br>"
+                + "接著會出現「建立帳號」畫面；建立新帳號後才會清除，按取消則保持原狀。<br><br>"
                 + "請輸入 <b>RESET</b> 確認：</html>";
         String in = JOptionPane.showInputDialog(this, msg, "重設帳號", JOptionPane.WARNING_MESSAGE);
         if (in == null) return;
@@ -162,14 +174,8 @@ public final class LoginDialog extends JDialog {
             JOptionPane.showMessageDialog(this, "輸入不符，未重設。", "重設帳號", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        try {
-            store.resetAccount();
-            AppLog.info("帳號已重設（忘記密碼），Google Chat Webhook 已清除，需重新設定");
-            resetRequested = true;
-            dispose();
-        } catch (Exception ex) {
-            msg("重設失敗：" + ex.getMessage());
-        }
+        resetRequested = true;          // v1.7.1：此時還不清除，建立新帳號成功時才清除
+        dispose();
     }
 
     private void msg(String s) { this.msg.setText(s); }

@@ -33,6 +33,7 @@ final class KeywordsPanel extends JPanel {
         add(top, BorderLayout.NORTH);
 
         list.setVisibleRowCount(14);
+        UiUtil.plainText(list);
         list.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         add(new JScrollPane(list), BorderLayout.CENTER);
 

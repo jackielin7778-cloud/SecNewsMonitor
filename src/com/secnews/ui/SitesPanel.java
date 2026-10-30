@@ -44,6 +44,7 @@ final class SitesPanel extends JPanel {
         add(top, BorderLayout.NORTH);
 
         table.setRowSorter(sorter);
+        UiUtil.plainText(table);
         table.setRowHeight(table.getRowHeight() + 6);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.getColumnModel().getColumn(0).setPreferredWidth(45);

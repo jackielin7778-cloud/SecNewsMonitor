@@ -5,6 +5,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 export SECNEWS_HOME="$WORK/data"
+export SECNEWS_ALLOW_PRIVATE=1        # 測試用 RSS 在本機（v1.7.1 起預設不連內網／本機位址）
 unset DISPLAY WAYLAND_DISPLAY SECNEWS_PASSWORD SECNEWS_PASSWORD_FILE CREDENTIALS_DIRECTORY
 RUN="$ROOT/run-linux.sh"
 PASS=0; FAIL=0
@@ -62,9 +63,18 @@ sed -i 's/^chat.enabled=.*//' "$C1/channel.properties"; echo 'chat.enabled=false
 out=$(SECNEWS_PASSWORD=wrong123 run --run-once); rc=$?; check "wrong password rc1" '[ $rc -eq 1 ] && [[ "$out" == *"密碼錯誤"* ]]'
 printf '%s\n' "$PW" > "$WORK/pw"; chmod 644 "$WORK/pw"
 out=$(run --run-once --password-file "$WORK/pw"); rc=$?
-check "password-file works" '[ $rc -eq 0 ] && [[ "$out" == *"已建立基準"* ]]'
-check "password-file perm warning" '[[ "$out" == *"chmod 600"* ]]'
+check "password-file 644 refused (v1.7.1)" '[ $rc -eq 1 ] && [[ "$out" == *"chmod 600"* ]]'
 chmod 600 "$WORK/pw"
+out=$(run --run-once --password-file "$WORK/pw"); rc=$?
+check "password-file works" '[ $rc -eq 0 ] && [[ "$out" == *"已建立基準"* ]]'
+out=$(run --channel nope --password-file "$WORK/pw" --run-once); rc=$?
+check "command after options (v1.7.1)" '[ $rc -eq 2 ] && [[ "$out" == *"找不到頻道"* ]]'
+out=$(SECNEWS_ALLOW_PRIVATE= SECNEWS_PASSWORD_FILE="$WORK/pw" run --run-once); rc=$?
+check "local site blocked without allowPrivate (v1.7.1)" '[[ "$out" == *"不連線到內網"* ]]'
+out=$(printf 'ops3\nshort\nshort\nshort\nshort\nshort\nshort\n' | run --setup --reset); rc=$?
+check "setup --reset invalid input keeps account (v1.7.1)" '[ $rc -eq 1 ] && [[ "$out" == *"原帳號保持不變"* ]]'
+out=$(SECNEWS_PASSWORD_FILE="$WORK/pw" run --status); check "account kept" '[[ "$out" == *"ops"* ]] && [[ "$out" != *"ops3"* ]]'
+
 # 新文章 → 第二次執行應命中
 cat > "$WORK/www/feed.xml" <<EOF
 <?xml version="1.0" encoding="UTF-8"?><rss><channel>

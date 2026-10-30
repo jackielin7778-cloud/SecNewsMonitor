@@ -47,6 +47,7 @@ final class ProductsPanel extends JPanel {
         top.add(hint, BorderLayout.SOUTH);
         add(top, BorderLayout.NORTH);
 
+        UiUtil.plainText(table);
         table.setRowHeight(table.getRowHeight() + 6);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         int[] w = {45, 130, 190, 120, 150, 150};

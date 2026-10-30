@@ -150,6 +150,15 @@ public final class Channel {
         if (inStock == null) productStock.remove(k); else productStock.put(k, inStock);
     }
 
+    /** 推播失敗時還原商品狀態（v1.7.1），讓下次執行再通知一次。price 為 null 表示原本沒有紀錄。 */
+    public synchronized void restoreProduct(String watch, String productId, Integer price, Boolean inStock) throws IOException {
+        Map<String, Integer> m = prices();
+        String k = norm(watch) + "\t" + norm(productId);
+        if (price == null) { m.remove(k); productStock.remove(k); return; }
+        m.put(k, price);
+        if (inStock == null) productStock.remove(k); else productStock.put(k, inStock);
+    }
+
     /** 讀取頻道設定（給商品監控各網站的網址樣板用，可在 channel.properties 覆寫）。 */
     public synchronized String getProp(String key, String def) {
         return props.getProperty(key, def);
@@ -239,13 +248,44 @@ public final class Channel {
     public synchronized String getWebhookUrl() {
         javax.crypto.SecretKey k = store.sessionKey();
         if (k == null) return "";
-        return Crypto.decrypt(k, props.getProperty("chat.webhook.enc", ""));
+        try {
+            return Crypto.decrypt(k, props.getProperty("chat.webhook.enc", ""));
+        } catch (IllegalStateException e) {
+            // 變更密碼進行中（新金鑰已生效、本頻道尚未換成新密文）：改用暫存欄位
+            String pending = props.getProperty("chat.webhook.enc.pending");
+            if (pending == null) throw e;
+            return Crypto.decrypt(k, pending);
+        }
     }
 
     public synchronized void setWebhookUrl(String url) throws IOException {
         javax.crypto.SecretKey k = store.sessionKey();
         if (k == null) throw new IllegalStateException("尚未登入");
         props.setProperty("chat.webhook.enc", Crypto.encrypt(k, url == null ? "" : url.trim()));
+        saveProps();
+    }
+
+    /** 變更密碼第 1 階段：把新金鑰加密的 Webhook 寫到暫存欄位。 */
+    synchronized void stagePendingWebhook(String encrypted) throws IOException {
+        props.setProperty("chat.webhook.enc.pending", encrypted);
+        saveProps();
+    }
+
+    /**
+     * 變更密碼第 3 階段（或登入時收尾）：暫存欄位能用目前金鑰解密 → 換成正式欄位；不能 → 丟棄暫存欄位。
+     */
+    synchronized void resolvePendingWebhook(javax.crypto.SecretKey key) throws IOException {
+        String pending = props.getProperty("chat.webhook.enc.pending");
+        if (pending == null) return;
+        boolean ok;
+        try {
+            Crypto.decrypt(key, pending);
+            ok = true;
+        } catch (IllegalStateException e) {
+            ok = false;
+        }
+        if (ok) props.setProperty("chat.webhook.enc", pending);
+        props.remove("chat.webhook.enc.pending");
         saveProps();
     }
 
@@ -257,6 +297,7 @@ public final class Channel {
     /** 忘記密碼重設帳號時：舊金鑰加密的 Webhook 已無法解密，直接清除。 */
     synchronized void clearWebhook() throws IOException {
         props.remove("chat.webhook.enc");
+        props.remove("chat.webhook.enc.pending");
         saveProps();
     }
 
@@ -341,6 +382,14 @@ public final class Channel {
         LinkedHashSet<String> s = seenBySite.computeIfAbsent(site, x -> new LinkedHashSet<>());
         s.remove(k);
         s.add(k);
+    }
+
+    /** 推播失敗（或超過單次上限）時取消已讀標記（v1.7.1），下次執行會再比對、再推播。 */
+    public synchronized void unmarkSeen(String site, String key) {
+        String k = norm(key);
+        LinkedHashSet<String> s = seenBySite.get(site);
+        if (s != null) s.remove(k);
+        legacySeen.remove(k);
     }
 
     public synchronized void retainSeen(String site, Collection<String> currentKeys) {

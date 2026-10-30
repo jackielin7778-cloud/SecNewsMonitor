@@ -33,9 +33,21 @@ final class Cli {
 
     private Cli() {}
 
+    /** 取出指令：v1.7.1 起指令可放在任何位置（例如 --channel 名稱 --run-once）。 */
     static Command parse(String[] args) {
         if (args.length == 0) return Command.GUI;
-        return switch (args[0]) {
+        for (int i = 0; i < args.length; i++) {
+            if (i > 0 && VALUE_FLAGS.contains(args[i - 1])) continue;       // 這是前一個選項的值
+            Command c = command(args[i]);
+            if (c != null) return c;
+        }
+        return Command.HELP;
+    }
+
+    private static final Set<String> VALUE_FLAGS = Set.of("--channel", "--password-file", "--type");
+
+    private static Command command(String a) {
+        return switch (a) {
             case "--headless", "--daemon" -> Command.HEADLESS;
             case "--setup" -> Command.SETUP;
             case "--set-webhook" -> Command.SET_WEBHOOK;
@@ -46,7 +58,8 @@ final class Cli {
             case "--delete-channel" -> Command.DELETE_CHANNEL;
             case "--version", "-v" -> Command.VERSION;
             case "--gui" -> Command.GUI;
-            default -> Command.HELP;
+            case "--help", "-h" -> Command.HELP;
+            default -> null;
         };
     }
 
@@ -73,7 +86,21 @@ final class Cli {
         }
 
         // 先取得鎖再讀取資料（v1.5 升級時會搬移設定檔，不可在其他執行個體執行中進行）
-        if (cmd != Command.STATUS && !App.acquireLock(Store.resolveDir())) {
+        boolean locked = App.acquireLock(Store.resolveDir());
+        if (cmd == Command.STATUS) {
+            // v1.7.1：--status 也先取得鎖；其他執行個體執行中時只讀取、不寫入紀錄或搬移檔案
+            try {
+                Store store = new Store();
+                if (locked) {
+                    AppLog.init(store.logsDir(), store::getLogRetentionDays);
+                    App.logMigration(store);
+                }
+                return status(store, !locked);
+            } finally {
+                if (locked) App.releaseLock();
+            }
+        }
+        if (!locked) {
             ERR.println("錯誤：SecNewsMonitor 已經在執行中（圖形介面或無介面模式）。");
             ERR.println("      請先停止它，例如：systemctl stop secnewsmonitor");
             return 3;
@@ -81,7 +108,6 @@ final class Cli {
         Store store = new Store();
         AppLog.init(store.logsDir(), store::getLogRetentionDays);
         App.logMigration(store);
-        if (cmd == Command.STATUS) return status(store);
         return switch (cmd) {
             case SETUP -> setup(store, args);
             case SET_WEBHOOK -> setWebhook(store, args);
@@ -129,10 +155,7 @@ final class Cli {
                 """.formatted(version()));
     }
 
-    private static int status(Store store) throws IOException {
-        boolean running = !App.acquireLock(store);
-        if (!running) App.releaseLock();
-
+    private static int status(Store store, boolean running) throws IOException {
         OUT.println("SecNewsMonitor " + version());
         OUT.println("資料夾        ：" + store.dir());
         OUT.println("執行狀態      ：" + (running ? "執行中" : "未執行"));
@@ -251,26 +274,37 @@ final class Cli {
                 ERR.println("若忘記密碼要重設，請執行：--setup --reset（會清除已儲存的 Webhook，其他設定保留）");
                 return 1;
             }
-            store.resetAccount();
-            AppLog.info("帳號已重設（命令列 --setup --reset），Webhook 已清除");
-            OUT.println("已重設帳號。");
+            OUT.println("將重設帳號：完成輸入新帳號密碼後，才會清除舊帳號與所有頻道的 Webhook。");
         }
+        boolean reset = store.hasAccount();
         OUT.println("== 建立管理員帳號 ==");
         String user = readLine("帳號：");
-        if (user == null || user.isBlank()) { ERR.println("帳號不可空白"); return 1; }
+        if (user == null || user.isBlank()) {
+            ERR.println("帳號不可空白" + (store.hasAccount() ? "，未重設，原帳號保持不變。" : ""));
+            return 1;
+        }
         user = user.trim();
         char[] pw = null;
         for (int attempt = 0; attempt < 3 && pw == null; attempt++) {
             char[] p1 = readPassword("密碼（至少 8 碼，含英文與數字）：");
             char[] p2 = readPassword("確認密碼：");
-            if (p1 == null || p2 == null) { ERR.println("沒有輸入密碼"); return 1; }
+            if (p1 == null || p2 == null) {
+                ERR.println("沒有輸入密碼" + (store.hasAccount() ? "，未重設，原帳號保持不變。" : ""));
+                return 1;
+            }
             String err = PasswordRules.check(p1, p2);
             Arrays.fill(p2, '\0');
             if (err == null) pw = p1;
             else { Arrays.fill(p1, '\0'); ERR.println(err); }
         }
-        if (pw == null) return 1;
-        store.createAccount(user, pw);
+        if (pw == null) { ERR.println(reset ? "未重設，原帳號保持不變。" : "未建立帳號。"); return 1; }
+        if (reset) {
+            store.resetAndCreateAccount(user, pw);       // v1.7.1：新帳密確認有效後才清除舊帳號
+            AppLog.info("帳號已重設（命令列 --setup --reset），Webhook 已清除");
+            OUT.println("已重設帳號。");
+        } else {
+            store.createAccount(user, pw);
+        }
         Arrays.fill(pw, '\0');
         AppLog.info("使用者 " + user + " 建立帳號（命令列）");
         OUT.println("帳號已建立。");
@@ -373,7 +407,13 @@ final class Cli {
             ERR.println("尚未建立帳號，請先執行 --setup");
             return false;
         }
-        char[] pw = passwordFromConfiguredSource(args);
+        char[] pw;
+        try {
+            pw = passwordFromConfiguredSource(args);
+        } catch (IOException e) {
+            ERR.println("錯誤：" + e.getMessage());
+            return false;
+        }
         if (pw == null) pw = readPassword("帳號 " + store.accountUser() + " 的密碼：");
         if (pw == null) {
             ERR.println("沒有可用的密碼來源。無介面執行時請使用 --password-file、SECNEWS_PASSWORD_FILE 或 systemd credential。");
@@ -382,12 +422,16 @@ final class Cli {
         try {
             if (store.login(store.accountUser(), pw)) return true;
             AppLog.info("[錯誤] 命令列登入失敗：密碼錯誤");
+            try { Thread.sleep(loginFailDelayMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             ERR.println("密碼錯誤。忘記密碼請執行 --setup --reset");
             return false;
         } finally {
             Arrays.fill(pw, '\0');
         }
     }
+
+    /** 命令列登入失敗後的等待時間（v1.7.1，降低以指令碼大量猜密碼的速度）。測試時可縮短。 */
+    static long loginFailDelayMs = 3000;
 
     /** 從檔案、systemd credential 或環境變數取得密碼；都沒有回傳 null。 */
     static char[] passwordFromConfiguredSource(String[] args) throws IOException {
@@ -401,24 +445,30 @@ final class Cli {
         }
         if (file != null) {
             Path p = Paths.get(file);
-            warnIfReadableByOthers(p);
+            if (isReadableByOthers(p)) {
+                // v1.7.1：由警告改為拒絕使用
+                throw new IOException("密碼檔 " + p + " 其他使用者也能讀取，基於安全考量不使用。請執行：chmod 600 " + p);
+            }
             String s = Files.readString(p, StandardCharsets.UTF_8);
             int end = s.length();
             while (end > 0 && (s.charAt(end - 1) == '\n' || s.charAt(end - 1) == '\r')) end--;
             return s.substring(0, end).toCharArray();
         }
         String env = System.getenv("SECNEWS_PASSWORD");
+        if (env != null) {
+            ERR.println("[提醒] 使用環境變數 SECNEWS_PASSWORD 傳遞密碼：同一使用者的其他程式可能讀得到；"
+                    + "建議改用 --password-file（權限 600）或 systemd credential。");
+        }
         return env == null ? null : env.toCharArray();
     }
 
-    private static void warnIfReadableByOthers(Path p) {
+    /** 群組或其他使用者可讀（Windows 等不支援 POSIX 權限時回傳 false）。 */
+    static boolean isReadableByOthers(Path p) {
         try {
             Set<PosixFilePermission> perms = Files.getPosixFilePermissions(p);
-            if (perms.contains(PosixFilePermission.GROUP_READ) || perms.contains(PosixFilePermission.OTHERS_READ)) {
-                ERR.println("[警告] 密碼檔 " + p + " 其他使用者也能讀取，建議執行：chmod 600 " + p);
-            }
-        } catch (Exception ignored) {
-            // Windows 或不支援 POSIX 權限
+            return perms.contains(PosixFilePermission.GROUP_READ) || perms.contains(PosixFilePermission.OTHERS_READ);
+        } catch (UnsupportedOperationException | IOException e) {
+            return false;
         }
     }
 

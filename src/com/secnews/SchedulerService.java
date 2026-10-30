@@ -83,12 +83,17 @@ public final class SchedulerService {
         else AppLog.info(tag + "排程未啟用或設定不完整，目前不會自動執行");
     }
 
+    /** v1.7.1：整個 tick 包在 try/catch 裡；例外若傳出去，排程器會靜默停止之後所有排程。 */
     private void tick() {
-        ZonedDateTime now = ZonedDateTime.now();
-        for (Channel c : store.channels()) {
-            ZonedDateTime due = nextRun.get(c.id());
-            if (due != null && !now.isBefore(due)) execute(c, "排程");
-            if (Thread.currentThread().isInterrupted()) return;
+        try {
+            ZonedDateTime now = ZonedDateTime.now();
+            for (Channel c : store.channels()) {
+                ZonedDateTime due = nextRun.get(c.id());
+                if (due != null && !now.isBefore(due)) execute(c, "排程");
+                if (Thread.currentThread().isInterrupted()) return;
+            }
+        } catch (Throwable t) {
+            AppLog.error("排程檢查發生未預期錯誤（排程會繼續）", t);
         }
     }
 

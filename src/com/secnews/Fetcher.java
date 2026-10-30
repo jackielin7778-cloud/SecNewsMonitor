@@ -31,11 +31,12 @@ public class Fetcher {
     static final long MAX_FEED_BYTES = 50L * 1024 * 1024;
     /** 每則文章的標題／摘要最多保留的字數（避免單則內容過大）。 */
     static final int MAX_FIELD_CHARS = 8000;
-    private static final String UA = "SecNewsMonitor/1.0 (+RSS reader)";
+    static final String UA = "SecNewsMonitor/"
+            + (Character.isDigit(AppInfo.version().charAt(0)) ? AppInfo.version() : "dev") + " (+RSS reader)";
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15))
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            .followRedirects(HttpClient.Redirect.NEVER)      // 自行處理轉址，每一站都做 SafeUrl 檢查
             .build();
 
     /** 抓取網站（RSS／列表頁）遇到暫時性錯誤時的重試次數。 */
@@ -50,7 +51,14 @@ public class Fetcher {
             }
         }
         try (InputStream in = open(site.url, FETCH_RETRIES, site.name)) {
-            return parseFeed(site, new LimitedInputStream(in, MAX_FEED_BYTES));
+            try {
+                return parseFeed(site, new LimitedInputStream(in, MAX_FEED_BYTES));
+            } catch (Exception e) {
+                if (in instanceof DeadlineInputStream d && d.expired) {
+                    throw new IOException("讀取回應超過 " + bodyTimeoutSec + " 秒，已中斷", e);
+                }
+                throw e;
+            }
         }
     }
 
@@ -59,30 +67,59 @@ public class Fetcher {
         return open(url, 0, null);
     }
 
+    /** 最多跟隨幾次轉址（每次都會重新做 SafeUrl 檢查）。 */
+    static final int MAX_REDIRECTS = 5;
+    /** 讀取回應內容的總時限（秒）：超過就中斷，避免對方以極慢速度傳送讓監控卡住。測試時可縮短。 */
+    static long bodyTimeoutSec = 90;
+
     /**
      * 開啟連線；遇到暫時性錯誤（HTTP 429／502／503／504、逾時、連線中斷）時，
      * 依 Retry-After 或 3、6 秒後重試，最多 retries 次。其他錯誤（例如 404）不重試。
+     * v1.7.1：自行處理轉址（每一站都檢查不是內網／本機位址），回應內容有總讀取時限。
      */
     InputStream open(String url, int retries, String label) throws IOException, InterruptedException {
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url.trim()))
-                .timeout(Duration.ofSeconds(30))
-                .header("User-Agent", UA)
-                .header("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.8, */*;q=0.5")
-                .GET().build();
+        URI first = SafeUrl.check(url);
         for (int attempt = 0; ; attempt++) {
             String problem;
             long wait = retryBaseMs << attempt;
             try {
-                HttpResponse<InputStream> resp = http.send(req, HttpResponse.BodyHandlers.ofInputStream());
-                int sc = resp.statusCode();
-                if (sc < 400) return resp.body();
-                resp.body().close();
-                boolean transientError = sc == 429 || sc == 502 || sc == 503 || sc == 504;
-                if (!transientError || attempt >= retries) {
-                    throw new HttpStatusException("HTTP " + sc + (attempt > 0 ? "（已重試 " + attempt + " 次）" : ""));
+                URI cur = first;
+                for (int hop = 0; ; hop++) {
+                    HttpRequest req = HttpRequest.newBuilder(cur)
+                            .timeout(Duration.ofSeconds(30))
+                            .header("User-Agent", UA)
+                            .header("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.8, */*;q=0.5")
+                            .GET().build();
+                    HttpResponse<InputStream> resp = http.send(req, HttpResponse.BodyHandlers.ofInputStream());
+                    int sc = resp.statusCode();
+                    if (sc == 301 || sc == 302 || sc == 303 || sc == 307 || sc == 308) {
+                        resp.body().close();
+                        String loc = resp.headers().firstValue("Location").orElse("");
+                        if (loc.isEmpty()) throw new HttpStatusException("HTTP " + sc + "（轉址但沒有 Location）");
+                        if (hop >= MAX_REDIRECTS) throw new HttpStatusException("轉址次數過多（超過 " + MAX_REDIRECTS + " 次）");
+                        URI next;
+                        try {
+                            next = cur.resolve(loc.trim().replace(" ", "%20"));
+                        } catch (IllegalArgumentException e) {
+                            throw new HttpStatusException("轉址網址格式錯誤");
+                        }
+                        try {
+                            cur = SafeUrl.check(next);
+                        } catch (IOException e) {
+                            throw new HttpStatusException("轉址被拒絕：" + e.getMessage());
+                        }
+                        continue;
+                    }
+                    if (sc < 400) return new DeadlineInputStream(resp.body(), bodyTimeoutSec);
+                    resp.body().close();
+                    boolean transientError = sc == 429 || sc == 502 || sc == 503 || sc == 504;
+                    if (!transientError || attempt >= retries) {
+                        throw new HttpStatusException("HTTP " + sc + (attempt > 0 ? "（已重試 " + attempt + " 次）" : ""));
+                    }
+                    problem = "HTTP " + sc;
+                    wait = retryAfterMs(resp).orElse(wait);
+                    break;
                 }
-                problem = "HTTP " + sc;
-                wait = retryAfterMs(resp).orElse(wait);
             } catch (HttpStatusException e) {
                 throw e;
             } catch (IOException e) {          // 逾時、連線被拒、連線中斷等
@@ -97,6 +134,44 @@ public class Fetcher {
                 AppLog.info("    " + label + "：" + problem + "，" + (wait / 1000.0) + " 秒後重試（第 " + (attempt + 1) + " 次）");
             }
             Thread.sleep(wait);
+        }
+    }
+
+    private static final java.util.concurrent.ScheduledExecutorService WATCHDOG =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "secnews-read-timeout");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** 超過總時限就自動關閉的串流（關閉會讓卡住的 read 立即丟出例外）。 */
+    static final class DeadlineInputStream extends FilterInputStream {
+        private final java.util.concurrent.ScheduledFuture<?> timer;
+        private volatile boolean expired;
+
+        DeadlineInputStream(InputStream in, long seconds) {
+            super(in);
+            timer = WATCHDOG.schedule(() -> {
+                expired = true;
+                try { in.close(); } catch (IOException ignored) {}
+            }, seconds, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
+        private IOException wrap(IOException e) {
+            return expired ? new IOException("讀取回應超過 " + bodyTimeoutSec + " 秒，已中斷", e) : e;
+        }
+
+        @Override public int read() throws IOException {
+            try { return super.read(); } catch (IOException e) { throw wrap(e); }
+        }
+
+        @Override public int read(byte[] b, int off, int len) throws IOException {
+            try { return super.read(b, off, len); } catch (IOException e) { throw wrap(e); }
+        }
+
+        @Override public void close() throws IOException {
+            timer.cancel(false);
+            super.close();
         }
     }
 
@@ -170,7 +245,7 @@ public class Fetcher {
         f.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
         f.setProperty(XMLInputFactory.IS_NAMESPACE_AWARE, true);
         f.setProperty(XMLInputFactory.IS_COALESCING, true);
-        XMLStreamReader r = f.createXMLStreamReader(in);
+        XMLStreamReader r = f.createXMLStreamReader(new EntityFixInputStream(in));
         List<FeedItem> items = new ArrayList<>();
         try {
             while (r.hasNext()) {
@@ -234,10 +309,87 @@ public class Fetcher {
         return sb.toString().trim();
     }
 
-    /** 以「前綴:名稱」表示元素，例如 dc:date、content:encoded；沒有前綴就是名稱本身。 */
+    private static final Map<String, String> NS_PREFIX = Map.of(
+            "http://purl.org/dc/elements/1.1/", "dc:",
+            "http://purl.org/rss/1.0/modules/content/", "content:");
+
+    /**
+     * 元素名稱：RSS／Atom 本身的元素一律用名稱本身（不論文件用什麼前綴，例如 atom:entry → entry）；
+     * Dublin Core、content 模組固定為 dc:、content:；其他命名空間保留原前綴。
+     */
     private static String qname(XMLStreamReader r) {
+        String ns = r.getNamespaceURI();
+        String local = r.getLocalName();
+        if (ns != null) {
+            String fixed = NS_PREFIX.get(ns);
+            if (fixed != null) return fixed + local;
+            if (ns.equals("http://www.w3.org/2005/Atom") || ns.equals("http://purl.org/rss/1.0/")
+                    || ns.equals("http://backend.userland.com/rss2") || ns.isEmpty()) return local;
+        }
         String p = r.getPrefix();
-        return p == null || p.isEmpty() ? r.getLocalName() : p + ":" + r.getLocalName();
+        return p == null || p.isEmpty() ? local : p + ":" + local;
+    }
+
+    /**
+     * 把 XML 未宣告的 HTML 實體（例如 &amp;nbsp;、&amp;copy;）在解析前換成數字實體；不認得的改成字面文字，
+     * 避免單一則文章的實體讓整個 RSS 解析失敗（v1.7.1）。只處理 ASCII 相容編碼（UTF-8、Big5 等）；UTF-16 原樣通過。
+     */
+    static final class EntityFixInputStream extends FilterInputStream {
+        private static final Map<String, Integer> HTML = Map.ofEntries(
+                Map.entry("nbsp", 160), Map.entry("copy", 169), Map.entry("reg", 174), Map.entry("trade", 8482),
+                Map.entry("hellip", 8230), Map.entry("mdash", 8212), Map.entry("ndash", 8211),
+                Map.entry("lsquo", 8216), Map.entry("rsquo", 8217), Map.entry("ldquo", 8220), Map.entry("rdquo", 8221),
+                Map.entry("laquo", 171), Map.entry("raquo", 187), Map.entry("bull", 8226), Map.entry("middot", 183),
+                Map.entry("deg", 176), Map.entry("times", 215), Map.entry("euro", 8364), Map.entry("yen", 165),
+                Map.entry("pound", 163), Map.entry("cent", 162), Map.entry("sect", 167), Map.entry("para", 182),
+                Map.entry("eacute", 233), Map.entry("uuml", 252), Map.entry("ouml", 246), Map.entry("auml", 228));
+        private byte[] pending = new byte[0];
+        private int pos;
+        private boolean first = true, passthrough;
+
+        EntityFixInputStream(InputStream in) { super(new java.io.BufferedInputStream(in, 8192)); }
+
+        @Override public int read() throws IOException {
+            if (pos < pending.length) return pending[pos++] & 0xff;
+            int c = in.read();
+            if (first) {
+                first = false;
+                if (c == 0xFE || c == 0xFF || c == 0) passthrough = true;    // UTF-16／UTF-32
+            }
+            if (c != '&' || passthrough) return c;
+            in.mark(16);
+            StringBuilder name = new StringBuilder();
+            int d;
+            while ((d = in.read()) >= 0 && name.length() < 12
+                    && ((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z') || (d >= '0' && d <= '9') || d == '#')) {
+                name.append((char) d);
+            }
+            String n = name.toString();
+            if (d != ';' || n.isEmpty() || n.startsWith("#") || n.equals("amp") || n.equals("lt") || n.equals("gt")
+                    || n.equals("quot") || n.equals("apos")) {
+                in.reset();
+                return c;
+            }
+            Integer cp = HTML.get(n);
+            String rep = cp != null ? "&#" + cp + ";" : "&amp;" + n + ";";
+            pending = rep.substring(1).getBytes(StandardCharsets.US_ASCII);
+            pos = 0;
+            return '&';
+        }
+
+        @Override public int read(byte[] b, int off, int len) throws IOException {
+            if (len == 0) return 0;
+            int i = 0;
+            while (i < len) {
+                int c = read();
+                if (c < 0) return i == 0 ? -1 : i;
+                b[off + i++] = (byte) c;
+                if (pos >= pending.length && in.available() <= 0 && i > 0) break;
+            }
+            return i;
+        }
+
+        @Override public boolean markSupported() { return false; }
     }
 
     // ---------------- 日期解析 ----------------
@@ -268,25 +420,27 @@ public class Fetcher {
     private static String firstNonEmpty(String a, String b) { return a.isEmpty() ? b : a; }
 
     // ---------------- HTML（無 RSS 的網站） ----------------
-    private static final Pattern ANCHOR = Pattern.compile(
-            "<a\\b[^>]*?href\\s*=\\s*[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>",
-            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private static final Pattern META_CHARSET = Pattern.compile(
             "<meta[^>]+charset\\s*=\\s*[\"']?([A-Za-z0-9_\\-]+)", Pattern.CASE_INSENSITIVE);
 
-    /** 從網頁取出「文字夠長」的連結當作新聞標題（過濾選單、頁尾等短連結）。 */
+    /**
+     * 從網頁取出「文字夠長」的連結當作新聞標題（過濾選單、頁尾等短連結）。
+     * v1.7.1：改為線性掃描（HtmlScan），並只接受 http／https 連結。
+     */
     static List<FeedItem> parseHtml(Site site, byte[] body, Charset hint) {
         String html = decodeHtml(body, hint);
         Map<String, FeedItem> uniq = new LinkedHashMap<>();
         URI base = URI.create(site.url.trim());
-        Matcher m = ANCHOR.matcher(html);
-        while (m.find()) {
-            String title = stripTags(m.group(2));
+        for (HtmlScan.Anchor a : HtmlScan.anchors(html)) {
+            String title = stripTags(a.inner());
             if (title.codePointCount(0, title.length()) < 8) continue;
-            String href = m.group(1).trim();
-            if (href.startsWith("javascript:") || href.startsWith("mailto:")) continue;
+            String href = HtmlScan.decodeEntities(a.href()).trim();
+            int hash = href.indexOf('#');
+            if (hash >= 0) href = href.substring(0, hash);
+            if (href.isEmpty()) continue;
             String abs;
             try { abs = base.resolve(href.replace(" ", "%20")).toString(); } catch (Exception e) { continue; }
+            if (!ChatText.isWebUrl(abs)) continue;          // 排除 javascript:、mailto:、data: 等（不分大小寫）
             uniq.putIfAbsent(abs, new FeedItem(site.name, title, abs, ""));
         }
         return new ArrayList<>(uniq.values());
@@ -307,27 +461,22 @@ public class Fetcher {
 
     // ---------------- 全文比對：抓文章內文 ----------------
     private static final int MAX_TEXT_CHARS = 200_000;
-    private static final Pattern NOISE_BLOCKS = Pattern.compile(
-            "(?is)<(script|style|noscript|svg|head|nav|footer|header|aside|form)\\b.*?</\\1\\s*>");
-    private static final Pattern COMMENTS = Pattern.compile("(?s)<!--.*?-->");
 
     /** 下載文章網頁並轉成純文字（去除程式碼、樣式、選單、頁尾等雜訊）。 */
     public String fetchArticleText(String url) throws IOException, InterruptedException {
         return htmlToText(decodeHtml(get(url), null));
     }
 
+    /** v1.7.1：改為線性掃描，避免惡意網頁造成 O(n²) 運算。 */
     static String htmlToText(String html) {
-        String t = COMMENTS.matcher(html).replaceAll(" ");
-        t = NOISE_BLOCKS.matcher(t).replaceAll(" ");
+        String t = HtmlScan.removeComments(html);
+        t = HtmlScan.removeNoiseBlocks(t);
         t = stripTags(t);
         return t.length() > MAX_TEXT_CHARS ? t.substring(0, MAX_TEXT_CHARS) : t;
     }
 
+    /** 去除標籤、解碼實體（只解碼一次）、合併空白。 */
     static String stripTags(String s) {
-        if (s == null) return "";
-        String t = s.replaceAll("(?s)<[^>]*>", " ")
-                .replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<")
-                .replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'");
-        return t.replaceAll("\\s+", " ").trim();
+        return HtmlScan.stripTags(s);
     }
 }

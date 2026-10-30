@@ -51,12 +51,13 @@ public final class App {
             try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
         });
 
-        // 登入；若使用者選擇「重設帳號」，重新顯示（此時為建立帳號畫面）
+        // 登入；若使用者選擇「重設帳號」，重新顯示（此時為建立帳號畫面）。
+        // v1.7.1：建立新帳號成功時才真正清除舊帳號；在建立帳號畫面按取消，原帳號保持不變。
         final boolean[] ok = new boolean[1];
         final boolean[] reset = new boolean[1];
         do {
             SwingUtilities.invokeAndWait(() -> {
-                LoginDialog d = new LoginDialog(store);
+                LoginDialog d = new LoginDialog(store, reset[0]);
                 ok[0] = d.showDialog();
                 reset[0] = d.isResetRequested();
             });
