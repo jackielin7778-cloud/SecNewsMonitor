@@ -31,7 +31,7 @@ public final class App {
             return;
         }
 
-        String os = System.getProperty("os.name", "").toLowerCase();
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         if (os.contains("mac")) {
             System.setProperty("apple.awt.application.name", "SecNewsMonitor");
             System.setProperty("apple.laf.useScreenMenuBar", "true");

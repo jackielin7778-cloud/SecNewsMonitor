@@ -34,8 +34,6 @@ final class ProductMonitor {
         final int price, originPrice;
         /** 網站代碼（pchome／momo／ruten）。 */
         String site = "pchome";
-        /** 商品頁網址；null = 依網站樣板產生。 */
-        String link;
         /** 有貨 true、缺貨 false、不知道 null。 */
         Boolean inStock;
         Product(String id, String name, int price, int originPrice) {
@@ -150,7 +148,6 @@ final class ProductMonitor {
     }
 
     String linkOf(Channel ch, Product p) {
-        if (p.link != null && !p.link.isEmpty()) return p.link;
         String id = URLEncoder.encode(p.id, StandardCharsets.UTF_8);
         return switch (p.site) {
             case "momo" -> ch.getProp("product.momo.linkUrl", MOMO_LINK).replace("{id}", id);

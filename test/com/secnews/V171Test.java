@@ -278,6 +278,12 @@ public class V171Test {
         }
         check("L9 command anywhere", Cli.parse(new String[]{"--channel", "資安", "--run-once"}) == Cli.Command.RUN_ONCE);
         check("L9 value not taken as command", Cli.parse(new String[]{"--channel", "--status"}) == Cli.Command.HELP);
+        // SpotBugs SECUNI：非 ASCII 主機名稱不可通過 Webhook 驗證
+        for (String bad : new String[]{"https://chat.googleap\u0131s.com/v1/x", "https://chat.google\u212Apis.com/v1/x"}) {
+            boolean rej;
+            try { GoogleChatClient.validate(bad); rej = false; } catch (IllegalArgumentException e) { rej = true; }
+            check("webhook unicode host rejected", rej);
+        }
         check("L9 unknown → help", Cli.parse(new String[]{"--foo"}) == Cli.Command.HELP);
     }
 

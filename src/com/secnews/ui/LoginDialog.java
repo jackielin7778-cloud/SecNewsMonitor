@@ -178,8 +178,6 @@ public final class LoginDialog extends JDialog {
         dispose();
     }
 
-    private void msg(String s) { this.msg.setText(s); }
-
     private boolean resetRequested;
 
     /** 使用者是否按了「重設帳號」（呼叫端應重新顯示建立帳號畫面）。 */

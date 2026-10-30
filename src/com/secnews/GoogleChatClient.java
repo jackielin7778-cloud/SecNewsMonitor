@@ -30,7 +30,10 @@ public final class GoogleChatClient {
     public static void validate(String url) {
         if (url == null || url.isBlank()) throw new IllegalArgumentException("尚未設定 Webhook URL");
         URI u = URI.create(url.trim());
-        if (!"https".equalsIgnoreCase(u.getScheme()) || !"chat.googleapis.com".equalsIgnoreCase(u.getHost())) {
+        // 以 Locale.ROOT 轉小寫後完全比對（v1.7.1：避免 equalsIgnoreCase 把 ı、K 等非 ASCII 字元視為相同）
+        String sc = u.getScheme() == null ? "" : u.getScheme().toLowerCase(java.util.Locale.ROOT);
+        String host = u.getHost() == null ? "" : u.getHost().toLowerCase(java.util.Locale.ROOT);
+        if (!"https".equals(sc) || !"chat.googleapis.com".equals(host)) {
             throw new IllegalArgumentException("Webhook 必須是 https://chat.googleapis.com/... 的網址");
         }
     }
