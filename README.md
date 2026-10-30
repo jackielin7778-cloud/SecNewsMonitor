@@ -341,6 +341,8 @@ journalctl -u secnewsmonitor -f        # 查看執行紀錄
 
 ## 10. 版控與發佈
 
+修改程式前請先看 [SECURITY-CHECKLIST.md](SECURITY-CHECKLIST.md)（資安檢查表），交付前逐項確認。
+
 **提交到版控**：`src/`、`test/`、`docs/`、建置／執行／測試腳本、`README.md`、`CHANGELOG.md`、`.gitignore`、`.gitattributes`。
 
 **不提交**（`.gitignore` 已排除）：
