@@ -144,6 +144,29 @@ public class Fetcher {
                 return t;
             });
 
+    /** 指定秒數後關閉 c（用來中斷卡住的讀取）；完成時呼叫回傳值的 cancel。 */
+    static java.util.concurrent.ScheduledFuture<?> closeAfter(java.io.Closeable c, long seconds) {
+        return WATCHDOG.schedule(() -> {
+            try { c.close(); } catch (IOException ignored) {}
+        }, seconds, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    /**
+     * 讀取推播 API 的回應內容（v1.8.0）：有大小上限與總讀取時限，回應很慢或很大時不會讓排程卡住。
+     * 超過大小上限時截斷（回應內容只用於錯誤訊息）。
+     */
+    static String readLimited(HttpResponse<InputStream> resp, int maxBytes, long seconds) throws IOException {
+        try (InputStream in = new DeadlineInputStream(resp.body(), seconds)) {
+            byte[] buf = new byte[Math.min(maxBytes, 8192)];
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            int n;
+            while (out.size() < maxBytes && (n = in.read(buf, 0, Math.min(buf.length, maxBytes - out.size()))) > 0) {
+                out.write(buf, 0, n);
+            }
+            return out.toString(StandardCharsets.UTF_8);
+        }
+    }
+
     /** 超過總時限就自動關閉的串流（關閉會讓卡住的 read 立即丟出例外）。 */
     static final class DeadlineInputStream extends FilterInputStream {
         private final java.util.concurrent.ScheduledFuture<?> timer;

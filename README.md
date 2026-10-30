@@ -235,7 +235,7 @@ Google Workspace 帳號需管理員允許應用程式密碼；公司防火牆若
 
 ### 多個推播管道同時啟用
 - 每個頻道可同時啟用 Google Chat、LINE、Gmail，命中時全部推播，內容相同（LINE、Gmail 為純文字）。
-- **至少一個管道成功就視為已送出**；失敗的管道記錄在執行紀錄，不會讓成功的管道下次重複收到。全部失敗時，下次執行再推播。
+- 每個管道各自處理：**失敗的管道（LINE 只算失敗的收件人）放入待重送佇列**，下次執行只對它們重送，成功的管道不會重複收到。佇列最多保留 3 天、每個管道 30 則，超過的捨棄並記錄在執行紀錄。
 - Webhook、LINE Token、Gmail 應用程式密碼都以登入密碼推導的金鑰加密儲存；變更密碼時一併重新加密，重設帳號時一併清除。
 
 ## 6. 資料與安全
@@ -307,11 +307,12 @@ Linux 伺服器通常沒有 DISPLAY，請用**命令列＋無介面模式**。�
 | `--setup` | 第一次使用：建立帳號、設定 Google Chat Webhook |
 | `--headless` | 常駐背景，依排程執行（給 systemd 用） |
 | `--run-once` | 立即執行一次後結束 |
-| `--set-webhook`／`--test-chat` | 變更 Webhook／傳送測試訊息 |
+| `--set-webhook`／`--test-chat` | 變更 Webhook／傳送測試訊息到此頻道已啟用的推播管道（LINE 設為「所有好友」時需加 `--yes`） |
+| `--set-line`／`--set-email` | 設定 LINE 推播／Gmail 通知（v1.8） |
 | `--status` | 顯示設定、執行狀態與所有頻道（不需密碼） |
 | `--add-channel 名稱 [--type product]` | 新增頻道（之後編輯該頻道的 `sites.tsv`、`keywords.txt`；商品頻道編輯 `products.tsv`，每行：名稱、搜尋關鍵字、名稱需包含、價格上限、true、排除字、最低價格，以 Tab 分隔） |
 | `--delete-channel 名稱 --yes` | 刪除頻道 |
-| `--channel 名稱或ID` | 搭配 `--run-once`、`--set-webhook`、`--test-chat` 指定頻道；`--run-once` 未指定時執行全部啟用中的頻道，其他指令未指定時用第一個頻道 |
+| `--channel 名稱或ID` | 搭配 `--run-once`、`--set-webhook`、`--set-line`、`--set-email`、`--test-chat` 指定頻道；`--run-once` 未指定時執行全部啟用中的頻道，其他指令未指定時用第一個頻道 |
 | `--setup --reset` | 忘記密碼時重設帳號（清除 Webhook，其他設定保留） |
 
 **密碼來源**（依序）：`--password-file 檔案` → `SECNEWS_PASSWORD_FILE` → systemd credential

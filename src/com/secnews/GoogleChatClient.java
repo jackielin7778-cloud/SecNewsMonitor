@@ -42,6 +42,8 @@ public final class GoogleChatClient {
     static final int MAX_RETRIES = 4;
     /** 測試時可縮短等待時間。 */
     static long backoffUnitMs = 2000;
+    /** 回應內容的讀取時限（秒，v1.8.0）。測試時可縮短。 */
+    static long bodyTimeoutSec = 30;
 
     public void send(String webhookUrl, String text) throws IOException, InterruptedException {
         validate(webhookUrl);
@@ -59,11 +61,18 @@ public final class GoogleChatClient {
                         .header("Content-Type", "application/json; charset=UTF-8")
                         .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
                         .build();
-                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<java.io.InputStream> resp = http.send(req, HttpResponse.BodyHandlers.ofInputStream());
                 int sc = resp.statusCode();
+                // v1.8.0：回應內容有大小上限（64 KB）與讀取時限（30 秒），只用於錯誤訊息，並去除換行與控制字元
+                String b;
+                try {
+                    b = Fetcher.readLimited(resp, 64 * 1024, bodyTimeoutSec);
+                } catch (IOException e) {
+                    if (sc / 100 == 2) break;
+                    b = "";
+                }
                 if (sc / 100 == 2) break;
-                String b = resp.body() == null ? "" : resp.body();
-                String detail = "HTTP " + sc + "：" + b.substring(0, Math.min(300, b.length()));
+                String detail = "HTTP " + sc + "：" + ChatText.oneLine(b, 300);
                 boolean retryable = sc == 429 || sc >= 500;
                 if (!retryable || attempt >= MAX_RETRIES) {
                     throw new IOException("Google Chat 第 " + (i + 1) + "/" + parts.size() + " 則傳送失敗（"

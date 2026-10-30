@@ -18,7 +18,7 @@ public final class FeedItem {
     public FeedItem(String siteName, String title, String link, String summary, Instant published) {
         this.siteName = siteName;
         this.title = title == null ? "" : cleanLine(title);
-        this.link = link == null ? "" : link.trim();
+        this.link = link == null ? "" : cleanLine(link);         // v1.8.0：連結也去除換行與控制字元（防偽造執行紀錄）
         this.summary = summary == null ? "" : summary.trim();
         this.published = published;
     }

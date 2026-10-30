@@ -255,9 +255,10 @@ public class V171Test {
             m.sender = (u, t) -> { if (failNext.getAndSet(false)) throw new java.io.IOException("Chat 503"); sent.add(t); };
             check("M3 run1 hits", m.runChannel(nc, "t1").size() == 3);
             check("M3 run1 nothing sent", sent.isEmpty());
-            check("M3 run2 re-sends", m.runChannel(nc, "t2").size() == 3 && sent.size() == 1);
-            check("M3 run3 overflow sent", m.runChannel(nc, "t3").size() == 1 && sent.size() == 2);
-            check("M3 run4 nothing left", m.runChannel(nc, "t4").isEmpty());
+            // v1.8.0：失敗的通知放入待重送佇列，下次執行先重送；超過上限的 1 則重新偵測後推播
+            check("M3 run2 re-sends from outbox + overflow", m.runChannel(nc, "t2").size() == 1 && sent.size() == 2
+                    && sent.get(0).contains("Tomcat 漏洞") && sent.get(0).contains("Java 更新"));
+            check("M3 run3 nothing left", m.runChannel(nc, "t3").isEmpty() && sent.size() == 2);
         } finally {
             feed.stop(0);
         }

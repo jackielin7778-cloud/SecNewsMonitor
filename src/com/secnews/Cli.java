@@ -138,7 +138,7 @@ final class Cli {
                   run-linux.sh --set-webhook    變更 Google Chat Webhook
                   run-linux.sh --set-line       設定 LINE 推播（LINE 官方帳號 Messaging API）
                   run-linux.sh --set-email      設定 Gmail 通知（需 Gmail 應用程式密碼）
-                  run-linux.sh --test-chat      傳送測試訊息到此頻道已設定的所有推播管道（Google Chat、LINE、Gmail）
+                  run-linux.sh --test-chat      傳送測試訊息到此頻道已啟用的推播管道（Google Chat、LINE、Gmail；LINE 廣播需加 --yes）
                   run-linux.sh --status         顯示目前設定與所有頻道（不需密碼）
                   run-linux.sh --add-channel 名稱 [--type product]  新增頻道；--type product 為 PChome 商品監控
                                                            （之後編輯該頻道的 sites.tsv、keywords.txt 或 products.tsv，
@@ -148,7 +148,7 @@ final class Cli {
 
                 選項：
                   --password-file 檔案          從檔案讀取登入密碼（檔案權限請設為 600）
-                  --reset                       與 --setup 併用：重設既有帳號（會清除所有頻道的 Webhook）
+                  --reset                       與 --setup 併用：重設既有帳號（會清除所有頻道的 Google Chat Webhook、LINE Token、Gmail 應用程式密碼）
                   --channel 名稱或ID            指定頻道（--run-once、--set-webhook、--set-line、--set-email、--test-chat）；
                                                 未指定時：--run-once 執行全部頻道，其他指令使用第一個頻道
 
@@ -281,10 +281,10 @@ final class Cli {
         if (store.hasAccount()) {
             if (!has(args, "--reset")) {
                 ERR.println("已經有帳號「" + store.accountUser() + "」。");
-                ERR.println("若忘記密碼要重設，請執行：--setup --reset（會清除已儲存的 Webhook，其他設定保留）");
+                ERR.println("若忘記密碼要重設，請執行：--setup --reset（會清除已儲存的 Webhook、LINE Token、Gmail 應用程式密碼，其他設定保留）");
                 return 1;
             }
-            OUT.println("將重設帳號：完成輸入新帳號密碼後，才會清除舊帳號與所有頻道的 Webhook。");
+            OUT.println("將重設帳號：完成輸入新帳號密碼後，才會清除舊帳號與所有頻道的 Webhook、LINE Token、Gmail 應用程式密碼。");
         }
         boolean reset = store.hasAccount();
         OUT.println("== 建立管理員帳號 ==");
@@ -310,7 +310,7 @@ final class Cli {
         if (pw == null) { ERR.println(reset ? "未重設，原帳號保持不變。" : "未建立帳號。"); return 1; }
         if (reset) {
             store.resetAndCreateAccount(user, pw);       // v1.7.1：新帳密確認有效後才清除舊帳號
-            AppLog.info("帳號已重設（命令列 --setup --reset），Webhook 已清除");
+            AppLog.info("帳號已重設（命令列 --setup --reset），Webhook、LINE Token、Gmail 應用程式密碼已清除");
             OUT.println("已重設帳號。");
         } else {
             store.createAccount(user, pw);
@@ -366,7 +366,16 @@ final class Cli {
         if (!login(store, args)) return 1;
         MonitorService ms = new MonitorService(store);
         int tried = 0, failed = 0;
-        if (ch.hasWebhook()) {
+        // v1.8.0：只測試「已啟用且設定完整」的管道；廣播給所有好友需加 --yes（會用掉每位好友各 1 則額度）
+        if (ch.hasWebhook() && !ch.isChatEnabled()) OUT.println("Google Chat：已停用，略過。");
+        if (ch.hasLineToken() && !ch.isLineEnabled()) OUT.println("LINE：已停用，略過。");
+        if (ch.hasEmailPassword() && !ch.isEmailEnabled()) OUT.println("Gmail：已停用，略過。");
+        boolean lineOk = ch.isLineReady();
+        if (lineOk && ch.getLineMode() == Channel.LineMode.BROADCAST && !has(args, "--yes")) {
+            OUT.println("LINE：設定為「推給所有好友」，測試訊息會送給每位好友（各算 1 則）。確定要測試請加上 --yes，本次略過。");
+            lineOk = false;
+        }
+        if (ch.isChatEnabled() && ch.hasWebhook()) {
             tried++;
             try {
                 ms.sendTest(ch.getWebhookUrl(), ch.getName());
@@ -378,7 +387,7 @@ final class Cli {
                 ERR.println("Google Chat 傳送失敗：" + e.getMessage());
             }
         }
-        if (ch.hasLineToken() && (ch.getLineMode() == Channel.LineMode.BROADCAST || !ch.getLineTo().isEmpty())) {
+        if (lineOk) {
             tried++;
             try {
                 ms.sendTestLine(ch.getLineToken(), ch.getLineMode(), ch.getLineTo(), ch.getName());
@@ -390,7 +399,7 @@ final class Cli {
                 ERR.println("LINE 傳送失敗：" + e.getMessage());
             }
         }
-        if (ch.hasEmailPassword() && !ch.getEmailFrom().isEmpty() && !ch.getEmailTo().isEmpty()) {
+        if (ch.isEmailReady()) {
             tried++;
             try {
                 ms.sendTestEmail(ch.getEmailFrom(), ch.getEmailPassword(), ch.getEmailTo(), ch.getName());
@@ -403,7 +412,7 @@ final class Cli {
             }
         }
         if (tried == 0) {
-            ERR.println("頻道「" + ch.getName() + "」尚未設定任何推播管道，請先執行 --set-webhook、--set-line 或 --set-email");
+            ERR.println("頻道「" + ch.getName() + "」沒有已啟用且設定完整的推播管道，請先執行 --set-webhook、--set-line 或 --set-email");
             return 1;
         }
         return failed == 0 ? 0 : 1;

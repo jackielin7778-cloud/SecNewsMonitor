@@ -127,6 +127,8 @@ public final class Store {
 
     public synchronized void createAccount(String user, char[] password) throws IOException {
         Pending p = prepareAccount(user, password);
+        // v1.8.0：新帳號使用新的金鑰，頻道內既有的密文（例如上次重設帳號中途失敗留下的）一定無法解密，先清除
+        for (Channel c : channels) c.clearSecrets();
         commitAccount(p);
     }
 
@@ -205,18 +207,24 @@ public final class Store {
      * 網站清單、關鍵字、排程、已讀紀錄、執行紀錄都保留。
      */
     public synchronized void resetAccount() throws IOException {
+        // v1.8.0：先清除各頻道的機密，最後才刪除帳號。中途失敗時帳號仍在（舊密碼可用），可以重做。
+        for (Channel c : channels) c.clearSecrets();
         config.stringPropertyNames().stream()
                 .filter(k -> k.startsWith("account.") || k.equals("chat.webhook.enc"))
                 .toList().forEach(config::remove);
         sessionKey = null;
         saveConfig();
-        for (Channel c : channels) c.clearSecrets();
     }
 
-    /** 重設帳號並立即建立新帳號（命令列 --setup --reset：先確認新帳密有效才清除舊帳號）。 */
+    /**
+     * 重設帳號並立即建立新帳號（命令列 --setup --reset、畫面上的重設帳號）。
+     * v1.8.0：先準備新帳號（驗證輸入），再清除各頻道機密，最後一次寫入新帳號；中途失敗時舊帳號仍在。
+     */
     public synchronized void resetAndCreateAccount(String user, char[] password) throws IOException {
-        resetAccount();
-        createAccount(user, password);
+        Pending p = prepareAccount(user, password);
+        for (Channel c : channels) c.clearSecrets();
+        config.remove("chat.webhook.enc");
+        commitAccount(p);
     }
 
     /**
@@ -233,7 +241,16 @@ public final class Store {
         java.util.Map<Channel, java.util.Map<String, String>> secrets = new java.util.LinkedHashMap<>();
         for (Channel c : channels) {
             java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
-            for (String k : Channel.SECRET_KEYS) if (c.hasSecret(k)) m.put(k, c.getSecret(k));
+            for (String k : Channel.SECRET_KEYS) {
+                if (!c.hasSecret(k)) continue;
+                try {
+                    m.put(k, c.getSecret(k));
+                } catch (IllegalStateException e) {
+                    // v1.8.0：無法解密的機密（資料損毀）不讓整個變更密碼失敗；清除並提示重新設定
+                    c.clearSecret(k);
+                    AppLog.info("[" + c.getName() + "] [警告] " + Channel.secretLabel(k) + " 無法解密，已清除，請重新設定");
+                }
+            }
             if (!m.isEmpty()) secrets.put(c, m);
         }
         Pending p = prepareAccount(accountUser(), newPassword);

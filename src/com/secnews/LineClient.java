@@ -28,6 +28,8 @@ public final class LineClient {
     /** 5xx 錯誤重試次數；429（頻率或每月則數已達上限）不重試。 */
     static final int RETRIES = 2;
     static long backoffMs = 2000;
+    /** 回應內容的讀取時限（秒，v1.8.0）。測試時可縮短。 */
+    static long bodyTimeoutSec = 30;
 
     /** 使用者 ID（U）、群組 ID（C）、聊天室 ID（R）：一個字母加 32 個十六進位字元。 */
     private static final Pattern ID = Pattern.compile("[UCR][0-9a-f]{32}");
@@ -54,8 +56,19 @@ public final class LineClient {
         }
     }
 
-    /** 推播文字訊息。to 在 push 模式為收件人 ID 清單；broadcast 模式忽略。 */
-    public void send(String token, Channel.LineMode mode, List<String> to, String text) throws IOException, InterruptedException {
+    /** 推播文字訊息（每次產生新的重送編號）。 */
+    public List<String> send(String token, Channel.LineMode mode, List<String> to, String text) throws IOException, InterruptedException {
+        return send(token, mode, to, text, java.util.UUID.randomUUID().toString());
+    }
+
+    /**
+     * 推播文字訊息。to 在 push 模式為收件人 ID 清單；broadcast 模式忽略。
+     * idempotencyBase：同一則通知重送時使用相同的值（v1.8.0），重送編號（X-Line-Retry-Key）由它與收件人、段落編號產生，
+     * LINE 已收過的請求會回 409，不會重複送達。
+     * 回傳傳送失敗的收件人 ID（全部成功回傳空清單）；全部失敗或 broadcast 失敗時丟出例外。
+     */
+    public List<String> send(String token, Channel.LineMode mode, List<String> to, String text, String idempotencyBase)
+            throws IOException, InterruptedException {
         validateToken(token);
         List<String> parts = split(text);
         List<List<String>> batches = new ArrayList<>();
@@ -63,28 +76,52 @@ public final class LineClient {
             batches.add(parts.subList(i, Math.min(parts.size(), i + MAX_MESSAGES_PER_REQUEST)));
         }
         if (mode == Channel.LineMode.BROADCAST) {
-            for (List<String> b : batches) post("/v2/bot/message/broadcast", token, "{\"messages\":" + messages(b) + "}");
-            return;
+            for (int bi = 0; bi < batches.size(); bi++) {
+                post("/v2/bot/message/broadcast", token, "{\"messages\":" + messages(batches.get(bi)) + "}",
+                        retryKey(idempotencyBase, "broadcast", bi));
+            }
+            return List.of();
         }
-        if (to.isEmpty()) throw new IllegalArgumentException("沒有設定 LINE 收件人 ID");
+        // 先檢查所有收件人 ID（v1.8.0）：格式不符的略過並記錄，避免送到一半才失敗、下次又重送給前面的人
+        List<String> valid = new ArrayList<>();
+        for (String id : to) {
+            try {
+                validateId(id);
+                valid.add(id.trim());
+            } catch (IllegalArgumentException e) {
+                AppLog.info("LINE：" + e.getMessage() + "，已略過此收件人");
+            }
+        }
+        if (valid.isEmpty()) throw new IllegalArgumentException("沒有格式正確的 LINE 收件人 ID");
         List<String> failed = new ArrayList<>();
         IOException last = null;
-        for (String id : to) {
-            validateId(id);
+        for (String id : valid) {
             try {
-                for (List<String> b : batches) {
-                    post("/v2/bot/message/push", token, "{\"to\":" + GoogleChatClient.jsonString(id.trim())
-                            + ",\"messages\":" + messages(b) + "}");
+                for (int bi = 0; bi < batches.size(); bi++) {
+                    post("/v2/bot/message/push", token, "{\"to\":" + GoogleChatClient.jsonString(id)
+                            + ",\"messages\":" + messages(batches.get(bi)) + "}", retryKey(idempotencyBase, id, bi));
                 }
             } catch (IOException e) {
-                failed.add(id.substring(0, 5) + "…");
+                failed.add(id);
                 last = e;
             }
         }
         if (last != null) {
-            if (failed.size() == to.size()) throw last;
-            AppLog.info("LINE：部分收件人傳送失敗（" + String.join("、", failed) + "）：" + last.getMessage());
+            if (failed.size() == valid.size()) throw last;
+            AppLog.info("LINE：" + failed.size() + " 位收件人傳送失敗（" + mask(failed) + "）：" + last.getMessage());
         }
+        return failed;
+    }
+
+    /** 重送編號：同一則通知、同一位收件人、同一段，永遠相同（UUID 格式）。 */
+    static String retryKey(String base, String recipient, int batch) {
+        return java.util.UUID.nameUUIDFromBytes((base + "|" + recipient + "|" + batch).getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private static String mask(List<String> ids) {
+        List<String> out = new ArrayList<>();
+        for (String id : ids) out.add(id.substring(0, Math.min(5, id.length())) + "…");
+        return String.join("、", out);
     }
 
     private static String messages(List<String> parts) {
@@ -96,8 +133,8 @@ public final class LineClient {
         return sb.append(']').toString();
     }
 
-    private void post(String path, String token, String json) throws IOException, InterruptedException {
-        String retryKey = java.util.UUID.randomUUID().toString();   // 重試時沿用，避免重複傳送
+    /** 送出一個請求；5xx 與連線錯誤（逾時、連線中斷）以相同的重送編號重試（v1.8.0）。 */
+    private void post(String path, String token, String json, String retryKey) throws IOException, InterruptedException {
         for (int attempt = 0; ; attempt++) {
             HttpRequest req = HttpRequest.newBuilder(URI.create(apiBase + path))
                     .timeout(Duration.ofSeconds(30))
@@ -106,11 +143,25 @@ public final class LineClient {
                     .header("X-Line-Retry-Key", retryKey)
                     .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
                     .build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            int sc = resp.statusCode();
+            int sc;
+            String body;
+            try {
+                HttpResponse<java.io.InputStream> resp = http.send(req, HttpResponse.BodyHandlers.ofInputStream());
+                sc = resp.statusCode();
+                try {
+                    body = Fetcher.readLimited(resp, 64 * 1024, bodyTimeoutSec);      // 大小與時間上限（v1.8.0）
+                } catch (IOException e) {
+                    body = "";
+                }
+            } catch (IOException e) {
+                if (attempt >= RETRIES) throw new IOException("LINE 連線失敗：" + ChatText.oneLine(String.valueOf(e.getMessage()), 200), e);
+                AppLog.info("LINE 連線失敗（" + e.getClass().getSimpleName() + "），" + (backoffMs << attempt) / 1000.0 + " 秒後以相同重送編號重試");
+                Thread.sleep(backoffMs << attempt);
+                continue;
+            }
             if (sc / 100 == 2) return;
-            if (sc == 409) return;                 // 同一個 Retry-Key 已經成功送出過
-            String body = resp.body() == null ? "" : ChatText.oneLine(resp.body(), 300);
+            if (sc == 409) return;                 // 同一個重送編號 LINE 已經收過
+            String b = ChatText.oneLine(body, 300);
             String why = switch (sc) {
                 case 400 -> "請求格式錯誤（請確認收件人 ID）";
                 case 401 -> "Channel access token 無效或已過期";
@@ -119,7 +170,7 @@ public final class LineClient {
                 default -> "HTTP " + sc;
             };
             if (sc < 500 || attempt >= RETRIES) {
-                throw new IOException("LINE 傳送失敗：" + why + (body.isEmpty() ? "" : "；回應：" + body));
+                throw new IOException("LINE 傳送失敗：" + why + (b.isEmpty() ? "" : "；回應：" + b));
             }
             AppLog.info("LINE 回應 HTTP " + sc + "，" + (backoffMs << attempt) / 1000.0 + " 秒後重試");
             Thread.sleep(backoffMs << attempt);

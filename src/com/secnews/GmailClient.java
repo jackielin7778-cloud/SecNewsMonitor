@@ -30,8 +30,9 @@ public final class GmailClient {
 
     private static final Pattern ADDRESS = Pattern.compile("[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}");
 
+    /** 不先 trim：含空白、換行等字元一律視為格式不符（v1.8.0，防標頭注入）。 */
     public static void validateAddress(String a) {
-        if (a == null || a.length() > 254 || !ADDRESS.matcher(a.trim()).matches()) {
+        if (a == null || a.length() > 254 || !ADDRESS.matcher(a).matches()) {
             throw new IllegalArgumentException("Email 格式不符：" + ChatText.oneLine(a, 60));
         }
     }
@@ -46,10 +47,17 @@ public final class GmailClient {
         return s;
     }
 
-    public void send(String from, String appPassword, List<String> to, String subject, String body) throws IOException {
+    /** 整封郵件的寄送時限（秒）；超過就中斷連線（v1.8.0）。測試時可縮短。 */
+    static long totalTimeoutSec = 120;
+    /** SMTP 回應單行長度上限。 */
+    static final int MAX_LINE = 2000;
+
+    public void send(String from, String appPassword, List<String> toIn, String subject, String body) throws IOException {
+        from = from == null ? "" : from;
         validateAddress(from);
+        List<String> to = new java.util.ArrayList<>();
+        for (String t : toIn) { String x = t == null ? "" : t.trim(); validateAddress(x); to.add(x); }   // 之後一律使用驗證過的值
         if (to.isEmpty()) throw new IllegalArgumentException("沒有設定收件人");
-        for (String t : to) validateAddress(t);
         String pw = normalizeAppPassword(appPassword);
 
         Socket s;
@@ -67,33 +75,39 @@ public final class GmailClient {
             s = ss;
         }
         s.setSoTimeout(30000);
+        java.util.concurrent.ScheduledFuture<?> deadline = Fetcher.closeAfter(s, totalTimeoutSec);
         try (Socket sock = s;
              BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream(), StandardCharsets.US_ASCII));
              OutputStream out = sock.getOutputStream()) {
             expect(in, 220, "連線");
             cmd(out, "EHLO secnewsmonitor");
             expect(in, 250, "EHLO");
-            String auth = Base64.getEncoder().encodeToString(("\0" + from.trim() + "\0" + pw).getBytes(StandardCharsets.UTF_8));
+            String auth = Base64.getEncoder().encodeToString(("\0" + from + "\0" + pw).getBytes(StandardCharsets.UTF_8));
             cmd(out, "AUTH PLAIN " + auth);
             int code = read(in).code;
             if (code == 535 || code == 534) {
                 throw new IOException("Gmail 登入失敗：帳號或應用程式密碼錯誤（需開啟兩步驟驗證並建立應用程式密碼）");
             }
             if (code != 235) throw new IOException("Gmail 登入失敗（SMTP " + code + "）");
-            cmd(out, "MAIL FROM:<" + from.trim() + ">");
+            cmd(out, "MAIL FROM:<" + from + ">");
             expect(in, 250, "寄件人");
             for (String t : to) {
-                cmd(out, "RCPT TO:<" + t.trim() + ">");
+                cmd(out, "RCPT TO:<" + t + ">");
                 Reply r = read(in);
                 if (r.code != 250 && r.code != 251) throw new IOException("收件人 " + t + " 被拒絕（SMTP " + r.code + "）");
             }
             cmd(out, "DATA");
             expect(in, 354, "DATA");
-            out.write(message(from.trim(), to, subject, body).getBytes(StandardCharsets.US_ASCII));
+            out.write(message(from, to, subject, body).getBytes(StandardCharsets.US_ASCII));
             out.write(".\r\n".getBytes(StandardCharsets.US_ASCII));
             out.flush();
             expect(in, 250, "寄出");
             cmd(out, "QUIT");
+        } catch (IOException e) {
+            if (deadline.isDone()) throw new IOException("Gmail 寄送超過 " + totalTimeoutSec + " 秒，已中斷", e);
+            throw e;
+        } finally {
+            deadline.cancel(false);
         }
     }
 
@@ -151,7 +165,7 @@ public final class GmailClient {
         StringBuilder text = new StringBuilder();
         int lines = 0;
         while (true) {
-            line = in.readLine();
+            line = readLine(in);
             if (line == null) throw new IOException("Gmail 伺服器中斷連線");
             if (line.length() < 3 || ++lines > 100) throw new IOException("Gmail 伺服器回應格式不符");
             text.append(line.length() > 4 ? line.substring(4) : "").append(' ');
@@ -160,6 +174,19 @@ public final class GmailClient {
         int code;
         try { code = Integer.parseInt(line.substring(0, 3)); } catch (NumberFormatException e) { throw new IOException("Gmail 伺服器回應格式不符"); }
         return new Reply(code, text.toString().trim());
+    }
+
+    /** 讀一行，超過 MAX_LINE 字元就中止（v1.8.0）。 */
+    private static String readLine(BufferedReader in) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        int c;
+        while ((c = in.read()) >= 0) {
+            if (c == '\n') break;
+            if (c != '\r') sb.append((char) c);
+            if (sb.length() > MAX_LINE) throw new IOException("Gmail 伺服器回應過長");
+        }
+        if (c < 0 && sb.length() == 0) return null;
+        return sb.toString();
     }
 
     private static void expect(BufferedReader in, int code, String step) throws IOException {

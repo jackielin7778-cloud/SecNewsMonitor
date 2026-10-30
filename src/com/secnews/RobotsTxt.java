@@ -12,7 +12,11 @@ final class RobotsTxt {
     private final List<String> allow = new ArrayList<>();
     private final List<String> disallow = new ArrayList<>();
 
+    /** 只讀取前 MAX_TEXT_CHARS 個字元、最多 MAX_RULES 條規則、每條最多 MAX_RULE_CHARS 字（v1.8.0）。 */
+    static final int MAX_TEXT_CHARS = 512 * 1024, MAX_RULES = 2000, MAX_RULE_CHARS = 1000;
+
     static RobotsTxt parse(String text) {
+        if (text.length() > MAX_TEXT_CHARS) text = text.substring(0, MAX_TEXT_CHARS);
         RobotsTxt r = new RobotsTxt();
         boolean inStar = false, lastWasAgent = false;
         for (String raw : text.split("\\r?\\n")) {
@@ -33,8 +37,11 @@ final class RobotsTxt {
             }
             lastWasAgent = false;
             if (!inStar) continue;
-            if (key.equals("disallow") && !val.isEmpty()) r.disallow.add(val);
-            else if (key.equals("allow") && !val.isEmpty()) r.allow.add(val);
+            if (val.isEmpty() || val.length() > MAX_RULE_CHARS) continue;            // 過長的規則略過
+            if (r.allow.size() + r.disallow.size() >= MAX_RULES) break;               // 規則數上限
+            val = val.replaceAll("\\*{2,}", "*");                                     // 連續的 * 合併
+            if (key.equals("disallow")) r.disallow.add(val);
+            else if (key.equals("allow")) r.allow.add(val);
         }
         return r;
     }
@@ -52,15 +59,21 @@ final class RobotsTxt {
         return result;
     }
 
-    private static boolean matches(String rule, String path) {
-        StringBuilder re = new StringBuilder("^");
-        for (int k = 0; k < rule.length(); k++) {
-            char c = rule.charAt(k);
-            if (c == '*') re.append(".*");
-            else if (c == '$' && k == rule.length() - 1) re.append('$');
-            else re.append(java.util.regex.Pattern.quote(String.valueOf(c)));
+    /**
+     * 萬用字元比對（v1.8.0 安全修正）：原本把 * 轉成 regex 的 .*，外部 robots.txt 可用多個 * 造成指數級回溯，
+     * 讓監控卡住（7 個 * 約 11 秒、8 個超過 60 秒）。改用不回溯的貪婪比對，最壞 O(規則長度 × 網址長度)。
+     */
+    static boolean matches(String rule, String path) {
+        boolean anchored = rule.endsWith("$");
+        String pat = anchored ? rule.substring(0, rule.length() - 1) : rule + "*";
+        int p = 0, s = 0, star = -1, mark = 0, m = pat.length(), n = path.length();
+        while (s < n) {
+            if (p < m && pat.charAt(p) == '*') { star = p++; mark = s; }
+            else if (p < m && pat.charAt(p) == path.charAt(s)) { p++; s++; }
+            else if (star >= 0) { p = star + 1; s = ++mark; }
+            else return false;
         }
-        if (!rule.endsWith("$")) re.append(".*");
-        return path.matches(re.toString());
+        while (p < m && pat.charAt(p) == '*') p++;
+        return p == m;
     }
 }

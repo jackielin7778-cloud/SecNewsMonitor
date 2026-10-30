@@ -62,6 +62,7 @@ public final class MonitorService {
         final String tag = "[" + ch.getName() + "] ";
         long start = System.currentTimeMillis();
         AppLog.info(tag + "開始監控（" + trigger + "）");
+        flushOutbox(ch, tag);
         if (ch.isProduct()) return runProducts(ch, tag, start);
         List<Site> sites;
         KeywordMatcher matcher;
@@ -167,7 +168,7 @@ public final class MonitorService {
 
         if (!hits.isEmpty()) {
             List<Hit> undelivered = notifyChat(ch, hits);
-            for (Hit h : undelivered) ch.unmarkSeen(h.item.siteName, h.item.key());   // 下次執行再推播
+            for (Hit h : undelivered) ch.unmarkSeen(h.item.siteName, h.item.key());   // 超過單次上限：下次執行再推播
         }
         List<String> allNames = new ArrayList<>();
         for (Site s : sites) allNames.add(s.name);
@@ -236,9 +237,9 @@ public final class MonitorService {
     }
 
     /**
-     * 推播命中結果到此頻道啟用的管道（Google Chat、LINE、Gmail，v1.8 起可同時多個）。
-     * 回傳「沒有送出、下次執行應再推播」的項目（v1.7.1）：所有管道都失敗 → 全部；超過單次上限 → 超過的部分。
-     * 至少一個管道成功就視為已送出（避免成功的管道下次重複收到）；失敗的管道記錄在執行紀錄。
+     * 推播命中結果到此頻道啟用的管道（Google Chat、LINE、Gmail，可同時多個）。
+     * v1.8.0：每個管道各自處理——失敗的管道（LINE 只算失敗的收件人）放入待重送佇列（Outbox），下次執行只對它們重送，
+     * 成功的管道不會重複收到。回傳「超過單次上限、下次執行再推播」的項目。
      * 沒有任何啟用的管道 → 空（只記錄）。
      */
     private List<Hit> notifyChat(Channel ch, List<Hit> hits) {
@@ -263,30 +264,109 @@ public final class MonitorService {
             logTitles(hits);
             return List.of();
         }
+        String id = java.util.UUID.randomUUID().toString();
+        long now = System.currentTimeMillis() / 1000;
+        String subject = "[SecNewsMonitor] " + ch.getName() + "：" + pushed.size() + (ch.isProduct() ? " 件商品通知" : " 則新聞命中");
+        List<Outbox.Entry> entries = new ArrayList<>();
+        if (chat) entries.add(new Outbox.Entry(id, Outbox.CHAT, now, List.of(), subject, text));
+        if (line) entries.add(new Outbox.Entry(id, Outbox.LINE, now, List.of(), subject, plain(text)));
+        if (mail) entries.add(new Outbox.Entry(id, Outbox.MAIL, now, List.of(), subject, plain(text)));
         List<String> ok = new ArrayList<>(), failed = new ArrayList<>();
-        if (chat) {
-            try { sender.send(ch.getWebhookUrl(), text); ok.add("Google Chat"); }
-            catch (Exception e) { failed.add("Google Chat"); AppLog.error(tag + "推播到 Google Chat 失敗", e); }
-        }
-        if (line) {
-            try { lineSender.send(ch, plain(text)); ok.add("LINE"); }
-            catch (Exception e) { failed.add("LINE"); AppLog.error(tag + "推播到 LINE 失敗", e); }
-        }
-        if (mail) {
-            String subject = "[SecNewsMonitor] " + ch.getName() + "：" + (hits.size()) + (ch.isProduct() ? " 件商品通知" : " 則新聞命中");
-            try { mailSender.send(ch, subject, plain(text)); ok.add("Gmail"); }
-            catch (Exception e) { failed.add("Gmail"); AppLog.error(tag + "寄送 Gmail 失敗", e); }
+        for (Outbox.Entry e : entries) {
+            Outbox.Entry retry = deliver(ch, tag, e);
+            if (retry == null) ok.add(Outbox.label(e.notifier));
+            else { failed.add(Outbox.label(e.notifier)); enqueue(ch, tag, retry); }
         }
         if (ok.isEmpty()) {
-            AppLog.info(tag + "所有推播管道都失敗（下次執行會再推播），未推播的命中文章如下：");
-            logTitles(hits);
-            return new ArrayList<>(hits);
+            AppLog.info(tag + "所有推播管道都失敗，已放入待重送佇列，下次執行再推播。命中文章如下：");
+            logTitles(pushed);
+        } else {
+            AppLog.info(tag + "已推播 " + pushed.size() + " 則到 " + String.join("、", ok)
+                    + (failed.isEmpty() ? "" : "（" + String.join("、", failed) + " 失敗，已放入待重送佇列，下次執行只重送給它）"));
         }
-        AppLog.info(tag + "已推播 " + pushed.size() + " 則到 " + String.join("、", ok)
-                + (failed.isEmpty() ? "" : "（" + String.join("、", failed) + " 失敗，詳見上方紀錄）")
-                + (rest.isEmpty() ? "" : "（另有 " + rest.size() + " 則超過單次上限 " + max + " 則，下次執行再推播）"));
-        if (!rest.isEmpty()) logTitles(rest);
+        if (!rest.isEmpty()) {
+            AppLog.info(tag + "另有 " + rest.size() + " 則超過單次上限 " + max + " 則，下次執行再推播：");
+            logTitles(rest);
+        }
         return new ArrayList<>(rest);
+    }
+
+    /**
+     * 送出一則（新的或佇列中的）；成功回傳 null，失敗回傳要放回佇列的項目（LINE 部分失敗時只含失敗的收件人）。
+     */
+    private Outbox.Entry deliver(Channel ch, String tag, Outbox.Entry e) {
+        try {
+            switch (e.notifier) {
+                case Outbox.CHAT -> sender.send(ch.getWebhookUrl(), e.text);
+                case Outbox.LINE -> {
+                    List<String> to = e.to.isEmpty() ? ch.getLineTo() : e.to;
+                    List<String> bad = lineSender.send(ch, to, e.text, e.id);
+                    if (bad != null && !bad.isEmpty()) {
+                        return new Outbox.Entry(e.id, e.notifier, e.created, bad, e.subject, e.text);
+                    }
+                }
+                case Outbox.MAIL -> mailSender.send(ch, e.subject, e.text);
+                default -> { return null; }
+            }
+            return null;
+        } catch (Exception ex) {
+            AppLog.error(tag + "推播到 " + Outbox.label(e.notifier) + " 失敗", ex);
+            if (e.notifier.equals(Outbox.LINE) && e.to.isEmpty() && ch.getLineMode() == Channel.LineMode.PUSH) {
+                return new Outbox.Entry(e.id, e.notifier, e.created, ch.getLineTo(), e.subject, e.text);
+            }
+            return e;
+        }
+    }
+
+    private void enqueue(Channel ch, String tag, Outbox.Entry e) {
+        try {
+            int dropped = Outbox.add(ch, e);
+            if (dropped > 0) {
+                AppLog.info(tag + "[警告] " + Outbox.label(e.notifier) + " 待重送佇列已滿（上限 " + Outbox.MAX_PER_NOTIFIER
+                        + " 則），捨棄最舊的 " + dropped + " 則");
+            }
+        } catch (Exception ex) {
+            AppLog.error(tag + "寫入待重送佇列失敗", ex);
+        }
+    }
+
+    /** 執行開始時，先重送佇列中的通知（只送給當初失敗的管道／收件人）。 */
+    void flushOutbox(Channel ch, String tag) {
+        List<Outbox.Entry> all;
+        try {
+            all = Outbox.load(ch);
+        } catch (Exception e) {
+            AppLog.error(tag + "讀取待重送佇列失敗", e);
+            return;
+        }
+        if (all.isEmpty()) return;
+        long now = System.currentTimeMillis() / 1000;
+        List<Outbox.Entry> keep = new ArrayList<>();
+        java.util.Set<String> stopped = new java.util.HashSet<>();
+        int sent = 0, expired = 0, disabled = 0;
+        for (Outbox.Entry e : all) {
+            boolean ready = switch (e.notifier) {
+                case Outbox.CHAT -> ch.isChatEnabled() && ch.hasWebhook();
+                case Outbox.LINE -> ch.isLineReady();
+                case Outbox.MAIL -> ch.isEmailReady();
+                default -> false;
+            };
+            if (!ready) { disabled++; continue; }
+            if (now - e.created > Outbox.MAX_AGE_DAYS * 86400L) { expired++; continue; }
+            if (stopped.contains(e.notifier)) { keep.add(e); continue; }
+            Outbox.Entry retry = deliver(ch, tag, e);
+            if (retry == null) sent++;
+            else { keep.add(retry); stopped.add(e.notifier); }        // 這個管道仍失敗：本次不再嘗試後面的
+        }
+        try {
+            Outbox.save(ch, keep);
+        } catch (Exception e) {
+            AppLog.error(tag + "寫入待重送佇列失敗", e);
+        }
+        AppLog.info(tag + "待重送佇列：重送成功 " + sent + " 則"
+                + (keep.isEmpty() ? "" : "、仍待重送 " + keep.size() + " 則")
+                + (expired > 0 ? "、超過 " + Outbox.MAX_AGE_DAYS + " 天捨棄 " + expired + " 則" : "")
+                + (disabled > 0 ? "、管道已停用或未設定捨棄 " + disabled + " 則" : ""));
     }
 
     /** LINE、Email 用的純文字：去掉 Google Chat 的粗體記號（外部文字中的 * 已在 ChatText 轉成全形）。 */
@@ -294,9 +374,9 @@ public final class MonitorService {
         return chatText.replace("*", "");
     }
 
-    /** LINE 推播方式（測試時可替換）。 */
-    interface LineSender { void send(Channel ch, String text) throws Exception; }
-    LineSender lineSender = (ch, text) -> new LineClient().send(ch.getLineToken(), ch.getLineMode(), ch.getLineTo(), text);
+    /** LINE 推播方式（測試時可替換）；回傳失敗的收件人。 */
+    interface LineSender { List<String> send(Channel ch, List<String> to, String text, String idempotencyBase) throws Exception; }
+    LineSender lineSender = (ch, to, text, idem) -> new LineClient().send(ch.getLineToken(), ch.getLineMode(), to, text, idem);
 
     /** Gmail 寄信方式（測試時可替換）。 */
     interface MailSender { void send(Channel ch, String subject, String text) throws Exception; }

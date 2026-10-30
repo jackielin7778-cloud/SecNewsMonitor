@@ -309,6 +309,20 @@ public final class Channel {
         if (changed) saveProps();
     }
 
+    static String secretLabel(String key) {
+        return switch (key) {
+            case SECRET_LINE_TOKEN -> "LINE Token";
+            case SECRET_GMAIL_PASSWORD -> "Gmail 應用程式密碼";
+            default -> "Google Chat Webhook";
+        };
+    }
+
+    synchronized void clearSecret(String key) throws IOException {
+        props.remove(key);
+        props.remove(key + ".pending");
+        saveProps();
+    }
+
     /** 忘記密碼重設帳號時：舊金鑰加密的資料已無法解密，直接清除。 */
     synchronized void clearSecrets() throws IOException {
         for (String k : SECRET_KEYS) { props.remove(k); props.remove(k + ".pending"); }

@@ -127,7 +127,7 @@ public final class LoginDialog extends JDialog {
                 try {
                     if (resetMode) {
                         store.resetAndCreateAccount(user, pw);
-                        AppLog.info("帳號已重設（忘記密碼），Google Chat Webhook 已清除，需重新設定");
+                        AppLog.info("帳號已重設（忘記密碼），Google Chat Webhook、LINE Token、Gmail 應用程式密碼已清除，需重新設定");
                         return true;
                     }
                     if (setupMode) { store.createAccount(user, pw); return true; }
@@ -164,7 +164,7 @@ public final class LoginDialog extends JDialog {
 
     private void resetAccount() {
         String msg = "<html><b>密碼無法找回，只能重設帳號。</b><br><br>"
-                + "會刪除：帳號密碼、已儲存的 Google Chat Webhook（需重新貼上）<br>"
+                + "會刪除：帳號密碼、已儲存的 Google Chat Webhook、LINE Token、Gmail 應用程式密碼（需重新設定）<br>"
                 + "會保留：網站列表、關鍵字、排程、已讀紀錄、執行紀錄<br><br>"
                 + "接著會出現「建立帳號」畫面；建立新帳號後才會清除，按取消則保持原狀。<br><br>"
                 + "請輸入 <b>RESET</b> 確認：</html>";
