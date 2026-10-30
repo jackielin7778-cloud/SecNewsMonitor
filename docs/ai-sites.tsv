@@ -1,16 +1,28 @@
-# AI 新聞頻道的網站範本：在「網站列表」按「匯入…」選這個檔案。
-# 網址取自 Feeder.co 的 AI RSS 清單（https://feeder.co/discover/ai、https://feeder.co/zh-hant/knowledge-base/rss-content/tech-news-rss-feeds/），2026-10-29 整理。
-# 匯入後請逐一按「測試抓取」確認；抓不到的網站請停用或刪除。
-# TechNews、iThome 是全站新聞，需搭配關鍵字（例如 AI、生成式）過濾。
+# SecNewsMonitor AI 新聞頻道網站清單（2026-10-30）
+# 匯入方式：AI 新聞頻道 → 網站列表 → 匯入… → 選這個檔案。
+# 網址取自 Feeder.co 的 RSS 目錄；匯入後請逐一按「測試抓取」，抓不到的停用或刪除。
+# 台灣網站多為綜合科技新聞，靠「監控關鍵字」過濾出 AI 相關文章。
 # name	url	type(RSS|HTML)	enabled	fullText
+# ---- 台灣 ----
+iThome 新聞	https://www.ithome.com.tw/rss	RSS	true	false
+TechNews 科技新報	http://technews.tw/feed/	RSS	true	false
+數位時代 BusinessNext	https://rss.bnextmedia.com.tw/feed/bnext	RSS	true	false
+DIGITIMES 科技	https://www.digitimes.com.tw/tech/rss/xml/xmlrss_10_0.xml	RSS	true	false
+TechNice 科技島	https://www.technice.com.tw/feed/	RSS	true	false
+Yahoo奇摩 科技新聞	https://tw.news.yahoo.com/rss/technology	RSS	true	false
+電腦王阿達	https://www.koc.com.tw/feed	RSS	false	false
+# ---- 全球：AI 公司官方 ----
 OpenAI News	https://openai.com/news/rss.xml	RSS	true	false
 Google DeepMind Blog	https://deepmind.google/blog/rss.xml	RSS	true	false
 Hugging Face Blog	https://huggingface.co/blog/feed.xml	RSS	true	false
 Microsoft Source AI	https://news.microsoft.com/source/topics/ai/feed/	RSS	true	false
 AWS Machine Learning Blog	https://aws.amazon.com/blogs/machine-learning/feed/	RSS	false	false
+# ---- 全球：科技媒體 AI 分類 ----
 MIT Technology Review AI	https://www.technologyreview.com/topic/artificial-intelligence/feed	RSS	true	false
 TechCrunch AI	https://techcrunch.com/category/artificial-intelligence/feed/	RSS	true	false
 The Verge AI	https://www.theverge.com/rss/ai-artificial-intelligence/index.xml	RSS	true	false
 Ars Technica AI	https://arstechnica.com/ai/feed/	RSS	true	false
-TechNews 科技新報	http://technews.tw/feed/	RSS	true	false
-iThome 新聞	https://www.ithome.com.tw/rss	RSS	true	false
+Wired AI	https://www.wired.com/feed/tag/ai/latest/rss	RSS	true	false
+# ---- 全球：專業評論 ----
+Simon Willison's Weblog	https://simonwillison.net/atom/everything/	RSS	false	false
+Import AI	https://importai.substack.com/feed	RSS	false	false
