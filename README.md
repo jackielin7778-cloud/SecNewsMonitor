@@ -343,6 +343,9 @@ journalctl -u secnewsmonitor -f        # 查看執行紀錄
 
 修改程式前請先看 [SECURITY-CHECKLIST.md](SECURITY-CHECKLIST.md)（資安檢查表），交付前逐項確認。
 
+資安靜態掃描：`./security-scan.sh`（Windows：`security-scan.bat`）。使用 SpotBugs 4.9.2＋Find Security Bugs 1.14.0 掃描 `SecNewsMonitor.jar`，
+第一次執行會下載工具到 `tools/`（需要網路，下載後驗證雜湊值），報告在 `build/security-scan.html`。
+
 **提交到版控**：`src/`、`test/`、`docs/`、建置／執行／測試腳本、`README.md`、`CHANGELOG.md`、`.gitignore`、`.gitattributes`。
 
 **不提交**（`.gitignore` 已排除）：

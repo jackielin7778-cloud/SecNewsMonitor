@@ -58,7 +58,8 @@
 
 ## 7. 交付前
 - [ ] `./run-tests.sh` 與 `test/linux-cli-test.sh` 全部通過
+- [ ] 執行 `security-scan.sh`（Windows：`security-scan.bat`），檢視 `build/security-scan.html`，逐項判斷是否為誤報
 - [ ] 每個新的資安防護都有對應的自動測試（含攻擊範例）
-- [ ] 較大的版本：另外請一位沒參與開發的審查者（或獨立的審查代理）只看程式碼與本表找問題
+- [ ] 較大的版本：執行獨立資安審查（`independent-security-review` 技能：沒參與開發的審查代理只看程式碼與本表，每個發現附 PoC 實測）
 - [ ] CHANGELOG 註明資安相關變更與升級注意事項
 - [ ] 準備對外推廣前：定期請外部做安全分析
