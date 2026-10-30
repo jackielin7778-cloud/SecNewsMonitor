@@ -185,7 +185,7 @@ public final class Store {
         if (!Crypto.verify(password, salt, it, hash)) return false;
         sessionKey = Crypto.deriveKey(password, Crypto.unb64(config.getProperty("account.keySalt")), keyIterations());
         try {
-            for (Channel c : channels) c.resolvePendingWebhook(sessionKey);     // 上次變更密碼中途中斷時的收尾
+            for (Channel c : channels) c.resolvePendingSecrets(sessionKey);     // 上次變更密碼中途中斷時的收尾
         } catch (Exception e) {
             AppLog.error("整理 Webhook 加密資料失敗", e);
         }
@@ -210,7 +210,7 @@ public final class Store {
                 .toList().forEach(config::remove);
         sessionKey = null;
         saveConfig();
-        for (Channel c : channels) c.clearWebhook();
+        for (Channel c : channels) c.clearSecrets();
     }
 
     /** 重設帳號並立即建立新帳號（命令列 --setup --reset：先確認新帳密有效才清除舊帳號）。 */
@@ -229,14 +229,21 @@ public final class Store {
      * 若在 2 之後、3 之前中斷：新密碼有效，下次登入時用新金鑰把暫存欄位換成正式欄位。
      */
     public synchronized void changePassword(char[] newPassword) throws IOException {
-        java.util.Map<Channel, String> hooks = new java.util.LinkedHashMap<>();
-        for (Channel c : channels) if (c.hasWebhook()) hooks.put(c, c.getWebhookUrl());
+        // 每個頻道的所有加密欄位（Webhook、LINE Token、Gmail 應用程式密碼）
+        java.util.Map<Channel, java.util.Map<String, String>> secrets = new java.util.LinkedHashMap<>();
+        for (Channel c : channels) {
+            java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
+            for (String k : Channel.SECRET_KEYS) if (c.hasSecret(k)) m.put(k, c.getSecret(k));
+            if (!m.isEmpty()) secrets.put(c, m);
+        }
         Pending p = prepareAccount(accountUser(), newPassword);
-        for (java.util.Map.Entry<Channel, String> e : hooks.entrySet()) {
-            e.getKey().stagePendingWebhook(Crypto.encrypt(p.key, e.getValue()));
+        for (java.util.Map.Entry<Channel, java.util.Map<String, String>> e : secrets.entrySet()) {
+            for (java.util.Map.Entry<String, String> kv : e.getValue().entrySet()) {
+                e.getKey().stagePendingSecret(kv.getKey(), Crypto.encrypt(p.key, kv.getValue()));
+            }
         }
         commitAccount(p);
-        for (Channel c : hooks.keySet()) c.resolvePendingWebhook(p.key);
+        for (Channel c : secrets.keySet()) c.resolvePendingSecrets(p.key);
     }
 
     // ---------- 頻道 ----------

@@ -31,6 +31,9 @@ final class ChatPanel extends JPanel {
     private final JCheckBox show = new JCheckBox("顯示內容");
     private final JSpinner maxPerRun = new JSpinner(new SpinnerNumberModel(Store.DEFAULT_MAX_PER_RUN, 1, 200, 5));
 
+    /** 儲存後通知主視窗更新狀態列。 */
+    Runnable onSaved;
+
     ChatPanel(Channel store, MonitorService monitor) {
         super(new BorderLayout(8, 8));
         this.store = store;
@@ -57,7 +60,7 @@ final class ChatPanel extends JPanel {
         c.gridx = 1; c.gridy = y++; form.add(show, c);
         JPanel maxRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         maxRow.add(maxPerRun);
-        maxRow.add(new JLabel("則（超過的只記在「執行紀錄」，避免洗版）"));
+        maxRow.add(new JLabel("則（Google Chat、LINE、Gmail 共用；超過的下次執行再推播）"));
         y = addRow(form, c, y, "單次最多推播：", maxRow);
 
         JLabel help = new JLabel("<html><b>如何取得 Webhook：</b><br>"
@@ -71,6 +74,7 @@ final class ChatPanel extends JPanel {
         form.add(help, c);
 
         add(UiUtil.titled("頻道「" + store.getName() + "」的 Google Chat 傳入 Webhook（每個頻道可推到不同聊天室）", form), BorderLayout.NORTH);
+        enabled.setText("啟用 Google Chat 推播（可與 LINE、Gmail 同時啟用）");
 
         JPanel btns = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton save = new JButton("儲存");
@@ -158,6 +162,7 @@ final class ChatPanel extends JPanel {
             fillParts(url);
             AppLog.info("[" + store.getName() + "] Google Chat 設定已儲存（" + (enabled.isSelected() ? "啟用" : "停用")
                     + "，單次最多推播 " + maxPerRun.getValue() + " 則）");
+            if (onSaved != null) onSaved.run();
             JOptionPane.showMessageDialog(this, "已儲存（Webhook 已加密）");
         } catch (IllegalArgumentException e) {
             JOptionPane.showMessageDialog(this, e.getMessage(), "輸入錯誤", JOptionPane.WARNING_MESSAGE);

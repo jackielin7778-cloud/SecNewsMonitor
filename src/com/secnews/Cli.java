@@ -25,7 +25,7 @@ import java.util.concurrent.CountDownLatch;
  *   → 環境變數 SECNEWS_PASSWORD → 終端機輸入
  */
 final class Cli {
-    enum Command { GUI, HELP, VERSION, STATUS, SETUP, SET_WEBHOOK, TEST_CHAT, RUN_ONCE, HEADLESS, ADD_CHANNEL, DELETE_CHANNEL }
+    enum Command { GUI, HELP, VERSION, STATUS, SETUP, SET_WEBHOOK, SET_LINE, SET_EMAIL, TEST_CHAT, RUN_ONCE, HEADLESS, ADD_CHANNEL, DELETE_CHANNEL }
 
     private static final PrintStream OUT = new PrintStream(System.out, true, StandardCharsets.UTF_8);
     private static final PrintStream ERR = new PrintStream(System.err, true, StandardCharsets.UTF_8);
@@ -51,7 +51,9 @@ final class Cli {
             case "--headless", "--daemon" -> Command.HEADLESS;
             case "--setup" -> Command.SETUP;
             case "--set-webhook" -> Command.SET_WEBHOOK;
-            case "--test-chat" -> Command.TEST_CHAT;
+            case "--test-chat", "--test-notify" -> Command.TEST_CHAT;
+            case "--set-line" -> Command.SET_LINE;
+            case "--set-email" -> Command.SET_EMAIL;
             case "--run-once" -> Command.RUN_ONCE;
             case "--status" -> Command.STATUS;
             case "--add-channel" -> Command.ADD_CHANNEL;
@@ -112,6 +114,8 @@ final class Cli {
             case SETUP -> setup(store, args);
             case SET_WEBHOOK -> setWebhook(store, args);
             case TEST_CHAT -> testChat(store, args);
+            case SET_LINE -> setLine(store, args);
+            case SET_EMAIL -> setEmail(store, args);
             case RUN_ONCE -> runOnce(store, args);
             case HEADLESS -> headless(store, args);
             case ADD_CHANNEL -> addChannel(store, args);
@@ -132,7 +136,9 @@ final class Cli {
                   run-linux.sh --headless       無介面模式：常駐背景依排程執行（適合 systemd 服務）
                   run-linux.sh --run-once       立即執行一次監控後結束（全部啟用中的頻道）
                   run-linux.sh --set-webhook    變更 Google Chat Webhook
-                  run-linux.sh --test-chat      傳送 Google Chat 測試訊息
+                  run-linux.sh --set-line       設定 LINE 推播（LINE 官方帳號 Messaging API）
+                  run-linux.sh --set-email      設定 Gmail 通知（需 Gmail 應用程式密碼）
+                  run-linux.sh --test-chat      傳送測試訊息到此頻道已設定的所有推播管道（Google Chat、LINE、Gmail）
                   run-linux.sh --status         顯示目前設定與所有頻道（不需密碼）
                   run-linux.sh --add-channel 名稱 [--type product]  新增頻道；--type product 為 PChome 商品監控
                                                            （之後編輯該頻道的 sites.tsv、keywords.txt 或 products.tsv，
@@ -143,7 +149,7 @@ final class Cli {
                 選項：
                   --password-file 檔案          從檔案讀取登入密碼（檔案權限請設為 600）
                   --reset                       與 --setup 併用：重設既有帳號（會清除所有頻道的 Webhook）
-                  --channel 名稱或ID            指定頻道（--run-once、--set-webhook、--test-chat）；
+                  --channel 名稱或ID            指定頻道（--run-once、--set-webhook、--set-line、--set-email、--test-chat）；
                                                 未指定時：--run-once 執行全部頻道，其他指令使用第一個頻道
 
                 密碼來源（依序）：--password-file、環境變數 SECNEWS_PASSWORD_FILE、
@@ -172,6 +178,10 @@ final class Cli {
             OUT.println("== 頻道「" + ch.getName() + "」（ID " + ch.id() + "）" + (ch.isEnabled() ? "" : "【停用】"));
             OUT.println("Google Chat   ：" + (ch.hasWebhook() ? "已設定" : "未設定")
                     + "，推播" + (ch.isChatEnabled() ? "啟用" : "停用") + "，單次最多 " + ch.getMaxPushPerRun() + " 則");
+            OUT.println("LINE          ：" + (ch.hasLineToken() ? "已設定" : "未設定") + "，" + (ch.isLineEnabled() ? "啟用" : "停用")
+                    + (ch.hasLineToken() ? "，" + (ch.getLineMode() == Channel.LineMode.BROADCAST ? "所有好友" : ch.getLineTo().size() + " 位收件人") : ""));
+            OUT.println("Gmail         ：" + (ch.hasEmailPassword() ? "已設定" : "未設定") + "，" + (ch.isEmailEnabled() ? "啟用" : "停用")
+                    + (ch.getEmailTo().isEmpty() ? "" : "，" + ch.getEmailTo().size() + " 位收件人"));
             OUT.println("排程          ：" + sc.describe()
                     + (next != null && sc.enabled && ch.isEnabled() ? "（若現在啟動，下次執行 " + next.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) + "）" : ""));
             OUT.println("首次只建立基準：" + (sc.baselineFirstRun ? "是" : "否")
@@ -349,21 +359,122 @@ final class Cli {
         return true;
     }
 
+    /** 傳送測試訊息到此頻道已設定的所有推播管道（v1.8：Google Chat、LINE、Gmail）。 */
     private static int testChat(Store store, String[] args) throws Exception {
         Channel ch = channelArg(store, args, store.primary());
         if (ch == null) return 2;
         if (!login(store, args)) return 1;
-        if (!ch.hasWebhook()) { ERR.println("頻道「" + ch.getName() + "」尚未設定 Webhook，請先執行 --set-webhook"); return 1; }
-        try {
-            new MonitorService(store).sendTest(ch.getWebhookUrl(), ch.getName());
-            AppLog.info("[" + ch.getName() + "] Google Chat 測試訊息傳送成功（命令列）");
-            OUT.println("測試訊息已送出，請到 Google Chat 確認。");
-            return 0;
-        } catch (Exception e) {
-            AppLog.error("Google Chat 測試傳送失敗", e);
-            ERR.println("傳送失敗：" + e.getMessage());
+        MonitorService ms = new MonitorService(store);
+        int tried = 0, failed = 0;
+        if (ch.hasWebhook()) {
+            tried++;
+            try {
+                ms.sendTest(ch.getWebhookUrl(), ch.getName());
+                AppLog.info("[" + ch.getName() + "] Google Chat 測試訊息傳送成功（命令列）");
+                OUT.println("Google Chat：測試訊息已送出。");
+            } catch (Exception e) {
+                failed++;
+                AppLog.error("Google Chat 測試傳送失敗", e);
+                ERR.println("Google Chat 傳送失敗：" + e.getMessage());
+            }
+        }
+        if (ch.hasLineToken() && (ch.getLineMode() == Channel.LineMode.BROADCAST || !ch.getLineTo().isEmpty())) {
+            tried++;
+            try {
+                ms.sendTestLine(ch.getLineToken(), ch.getLineMode(), ch.getLineTo(), ch.getName());
+                AppLog.info("[" + ch.getName() + "] LINE 測試訊息傳送成功（命令列）");
+                OUT.println("LINE：測試訊息已送出。");
+            } catch (Exception e) {
+                failed++;
+                AppLog.error("LINE 測試傳送失敗", e);
+                ERR.println("LINE 傳送失敗：" + e.getMessage());
+            }
+        }
+        if (ch.hasEmailPassword() && !ch.getEmailFrom().isEmpty() && !ch.getEmailTo().isEmpty()) {
+            tried++;
+            try {
+                ms.sendTestEmail(ch.getEmailFrom(), ch.getEmailPassword(), ch.getEmailTo(), ch.getName());
+                AppLog.info("[" + ch.getName() + "] Gmail 測試信寄送成功（命令列）");
+                OUT.println("Gmail：測試信已寄出。");
+            } catch (Exception e) {
+                failed++;
+                AppLog.error("Gmail 測試寄送失敗", e);
+                ERR.println("Gmail 寄送失敗：" + e.getMessage());
+            }
+        }
+        if (tried == 0) {
+            ERR.println("頻道「" + ch.getName() + "」尚未設定任何推播管道，請先執行 --set-webhook、--set-line 或 --set-email");
             return 1;
         }
+        return failed == 0 ? 0 : 1;
+    }
+
+    private static int setLine(Store store, String[] args) throws Exception {
+        Channel ch = channelArg(store, args, store.primary());
+        if (ch == null) return 2;
+        if (!login(store, args)) return 1;
+        OUT.println("== 頻道「" + ch.getName() + "」的 LINE 推播（LINE 官方帳號 Messaging API；免費方案每月 200 則）==");
+        char[] tk = readPassword("Channel access token（留空表示停用並清除 LINE 設定）：");
+        if (tk == null) return 1;
+        String token = new String(tk).trim();
+        Arrays.fill(tk, '\0');
+        if (token.isEmpty()) {
+            ch.setLine(false, Channel.LineMode.PUSH, List.of(), "");
+            AppLog.info("[" + ch.getName() + "] LINE 設定已清除（命令列）");
+            OUT.println("已停用並清除 LINE 設定。");
+            return 0;
+        }
+        try {
+            LineClient.validateToken(token);
+            String m = readLine("推播對象：1 = 指定的人（使用者 ID）、2 = 官方帳號所有好友 [1]：");
+            Channel.LineMode mode = m != null && m.trim().equals("2") ? Channel.LineMode.BROADCAST : Channel.LineMode.PUSH;
+            List<String> to = new java.util.ArrayList<>();
+            if (mode == Channel.LineMode.PUSH) {
+                String ids = readLine("使用者 ID（多個用逗號分隔）：");
+                for (String id : Channel.splitList(ids == null ? "" : ids)) { LineClient.validateId(id); to.add(id); }
+                if (to.isEmpty()) { ERR.println("至少需要一個使用者 ID"); return 1; }
+            }
+            ch.setLine(true, mode, to, token);
+        } catch (IllegalArgumentException e) {
+            ERR.println(e.getMessage());
+            return 1;
+        }
+        AppLog.info("[" + ch.getName() + "] LINE 設定已儲存（命令列）");
+        OUT.println("LINE 設定已儲存（Token 已加密）。可執行 --test-chat --channel \"" + ch.getName() + "\" 測試。");
+        return 0;
+    }
+
+    private static int setEmail(Store store, String[] args) throws Exception {
+        Channel ch = channelArg(store, args, store.primary());
+        if (ch == null) return 2;
+        if (!login(store, args)) return 1;
+        OUT.println("== 頻道「" + ch.getName() + "」的 Gmail 通知（需 Google 帳戶的應用程式密碼）==");
+        String from = readLine("寄件 Gmail 帳號（留空表示停用並清除 Gmail 設定）：");
+        if (from == null) return 1;
+        if (from.isBlank()) {
+            ch.setEmail(false, "", List.of(), "");
+            AppLog.info("[" + ch.getName() + "] Gmail 設定已清除（命令列）");
+            OUT.println("已停用並清除 Gmail 設定。");
+            return 0;
+        }
+        try {
+            GmailClient.validateAddress(from.trim());
+            char[] pw = readPassword("應用程式密碼（16 個字母）：");
+            if (pw == null) return 1;
+            String app = GmailClient.normalizeAppPassword(new String(pw));
+            Arrays.fill(pw, '\0');
+            String r = readLine("收件人（多個用逗號分隔）：");
+            List<String> to = Channel.splitList(r == null ? "" : r);
+            if (to.isEmpty()) { ERR.println("至少需要一位收件人"); return 1; }
+            for (String t : to) GmailClient.validateAddress(t);
+            ch.setEmail(true, from.trim(), to, app);
+        } catch (IllegalArgumentException e) {
+            ERR.println(e.getMessage());
+            return 1;
+        }
+        AppLog.info("[" + ch.getName() + "] Gmail 設定已儲存（命令列）");
+        OUT.println("Gmail 設定已儲存（應用程式密碼已加密）。可執行 --test-chat --channel \"" + ch.getName() + "\" 測試。");
+        return 0;
     }
 
     private static int runOnce(Store store, String[] args) throws Exception {
@@ -382,8 +493,8 @@ final class Cli {
         AppLog.info("以無介面模式啟動，版本 " + version() + "，資料夾：" + store.dir() + "，Java "
                 + System.getProperty("java.version") + "，" + System.getProperty("os.name"));
         for (Channel ch : store.channels()) {
-            if (ch.isEnabled() && !ch.hasWebhook()) {
-                AppLog.info("[" + ch.getName() + "] [警告] 尚未設定 Google Chat Webhook，命中的文章只會記錄在紀錄檔");
+            if (ch.isEnabled() && !ch.hasAnyNotifier()) {
+                AppLog.info("[" + ch.getName() + "] [警告] 尚未設定推播（Google Chat、LINE 或 Gmail），命中的文章只會記錄在紀錄檔");
             }
         }
 

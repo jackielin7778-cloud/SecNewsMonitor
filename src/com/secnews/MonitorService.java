@@ -236,8 +236,10 @@ public final class MonitorService {
     }
 
     /**
-     * 推播命中結果；回傳「沒有送出、下次執行應再推播」的項目（v1.7.1）：
-     * 推播失敗 → 全部；超過單次上限 → 超過的部分。推播關閉或未設定 Webhook → 空（只記錄）。
+     * 推播命中結果到此頻道啟用的管道（Google Chat、LINE、Gmail，v1.8 起可同時多個）。
+     * 回傳「沒有送出、下次執行應再推播」的項目（v1.7.1）：所有管道都失敗 → 全部；超過單次上限 → 超過的部分。
+     * 至少一個管道成功就視為已送出（避免成功的管道下次重複收到）；失敗的管道記錄在執行紀錄。
+     * 沒有任何啟用的管道 → 空（只記錄）。
      */
     private List<Hit> notifyChat(Channel ch, List<Hit> hits) {
         String tag = "[" + ch.getName() + "] ";
@@ -247,28 +249,69 @@ public final class MonitorService {
         String text = ch.isProduct() ? formatProducts(ch.getName(), pushed, rest.size())
                 : format(ch.getName(), pushed, rest.size());
 
-        if (!ch.isChatEnabled()) {
-            AppLog.info(tag + "Google Chat 推播已關閉，命中文章如下：");
+        boolean chat = ch.isChatEnabled() && ch.hasWebhook();
+        boolean line = ch.isLineReady();
+        boolean mail = ch.isEmailReady();
+        if (!chat && !line && !mail) {
+            if (ch.isChatEnabled() && !ch.hasWebhook() && !ch.isLineEnabled() && !ch.isEmailEnabled()) {
+                AppLog.info(tag + "[警告] 此頻道尚未設定 Google Chat Webhook，命中文章如下：");
+            } else if (ch.isLineEnabled() || ch.isEmailEnabled()) {
+                AppLog.info(tag + "[警告] 此頻道啟用的推播管道設定不完整，命中文章如下：");
+            } else {
+                AppLog.info(tag + "Google Chat 推播已關閉，命中文章如下：");
+            }
             logTitles(hits);
             return List.of();
         }
-        if (!ch.hasWebhook()) {
-            AppLog.info(tag + "[警告] 此頻道尚未設定 Google Chat Webhook，命中文章如下：");
-            logTitles(hits);
-            return List.of();
+        List<String> ok = new ArrayList<>(), failed = new ArrayList<>();
+        if (chat) {
+            try { sender.send(ch.getWebhookUrl(), text); ok.add("Google Chat"); }
+            catch (Exception e) { failed.add("Google Chat"); AppLog.error(tag + "推播到 Google Chat 失敗", e); }
         }
-        try {
-            sender.send(ch.getWebhookUrl(), text);
-            AppLog.info(tag + "已推播 " + pushed.size() + " 則到 Google Chat"
-                    + (rest.isEmpty() ? "" : "（另有 " + rest.size() + " 則超過單次上限 " + max + " 則，下次執行再推播）"));
-            if (!rest.isEmpty()) logTitles(rest);
-            return new ArrayList<>(rest);
-        } catch (Exception e) {
-            AppLog.error(tag + "推播到 Google Chat 失敗（下次執行會再推播）", e);
-            AppLog.info(tag + "未推播的命中文章如下：");
+        if (line) {
+            try { lineSender.send(ch, plain(text)); ok.add("LINE"); }
+            catch (Exception e) { failed.add("LINE"); AppLog.error(tag + "推播到 LINE 失敗", e); }
+        }
+        if (mail) {
+            String subject = "[SecNewsMonitor] " + ch.getName() + "：" + (hits.size()) + (ch.isProduct() ? " 件商品通知" : " 則新聞命中");
+            try { mailSender.send(ch, subject, plain(text)); ok.add("Gmail"); }
+            catch (Exception e) { failed.add("Gmail"); AppLog.error(tag + "寄送 Gmail 失敗", e); }
+        }
+        if (ok.isEmpty()) {
+            AppLog.info(tag + "所有推播管道都失敗（下次執行會再推播），未推播的命中文章如下：");
             logTitles(hits);
             return new ArrayList<>(hits);
         }
+        AppLog.info(tag + "已推播 " + pushed.size() + " 則到 " + String.join("、", ok)
+                + (failed.isEmpty() ? "" : "（" + String.join("、", failed) + " 失敗，詳見上方紀錄）")
+                + (rest.isEmpty() ? "" : "（另有 " + rest.size() + " 則超過單次上限 " + max + " 則，下次執行再推播）"));
+        if (!rest.isEmpty()) logTitles(rest);
+        return new ArrayList<>(rest);
+    }
+
+    /** LINE、Email 用的純文字：去掉 Google Chat 的粗體記號（外部文字中的 * 已在 ChatText 轉成全形）。 */
+    static String plain(String chatText) {
+        return chatText.replace("*", "");
+    }
+
+    /** LINE 推播方式（測試時可替換）。 */
+    interface LineSender { void send(Channel ch, String text) throws Exception; }
+    LineSender lineSender = (ch, text) -> new LineClient().send(ch.getLineToken(), ch.getLineMode(), ch.getLineTo(), text);
+
+    /** Gmail 寄信方式（測試時可替換）。 */
+    interface MailSender { void send(Channel ch, String subject, String text) throws Exception; }
+    MailSender mailSender = (ch, subject, text) -> new GmailClient().send(ch.getEmailFrom(), ch.getEmailPassword(), ch.getEmailTo(), subject, text);
+
+    /** 傳送 LINE 測試訊息。 */
+    public void sendTestLine(String token, Channel.LineMode mode, List<String> to, String channelName) throws Exception {
+        new LineClient().send(token, mode, to, "✅ SecNewsMonitor 測試訊息：LINE 串接成功。"
+                + (channelName == null ? "" : "\n頻道：" + channelName));
+    }
+
+    /** 寄送 Gmail 測試信。 */
+    public void sendTestEmail(String from, String appPassword, List<String> to, String channelName) throws Exception {
+        new GmailClient().send(from, appPassword, to, "[SecNewsMonitor] 測試信" + (channelName == null ? "" : "：" + channelName),
+                "✅ SecNewsMonitor 測試信：Gmail 串接成功。" + (channelName == null ? "" : "\n頻道：" + channelName));
     }
 
     private static void logTitles(List<Hit> hits) {

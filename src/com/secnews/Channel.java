@@ -244,61 +244,139 @@ public final class Channel {
 
     public synchronized int productStateCount() throws IOException { return prices().size(); }
 
-    // ---------- Google Chat ----------
-    public synchronized String getWebhookUrl() {
+    // ---------- 加密保存的機密（Google Chat Webhook、LINE Token、Gmail 應用程式密碼） ----------
+    static final String SECRET_WEBHOOK = "chat.webhook.enc";
+    static final String SECRET_LINE_TOKEN = "line.token.enc";
+    static final String SECRET_GMAIL_PASSWORD = "email.password.enc";
+    /** 所有加密欄位（變更密碼、重設帳號時一併處理）。 */
+    static final String[] SECRET_KEYS = {SECRET_WEBHOOK, SECRET_LINE_TOKEN, SECRET_GMAIL_PASSWORD};
+
+    /** 解密取得機密；未登入回傳空字串。 */
+    synchronized String getSecret(String key) {
         javax.crypto.SecretKey k = store.sessionKey();
         if (k == null) return "";
         try {
-            return Crypto.decrypt(k, props.getProperty("chat.webhook.enc", ""));
+            return Crypto.decrypt(k, props.getProperty(key, ""));
         } catch (IllegalStateException e) {
             // 變更密碼進行中（新金鑰已生效、本頻道尚未換成新密文）：改用暫存欄位
-            String pending = props.getProperty("chat.webhook.enc.pending");
+            String pending = props.getProperty(key + ".pending");
             if (pending == null) throw e;
             return Crypto.decrypt(k, pending);
         }
     }
 
-    public synchronized void setWebhookUrl(String url) throws IOException {
+    synchronized void setSecret(String key, String value) throws IOException {
         javax.crypto.SecretKey k = store.sessionKey();
         if (k == null) throw new IllegalStateException("尚未登入");
-        props.setProperty("chat.webhook.enc", Crypto.encrypt(k, url == null ? "" : url.trim()));
+        String v = value == null ? "" : value.trim();
+        if (v.isEmpty()) props.remove(key); else props.setProperty(key, Crypto.encrypt(k, v));
         saveProps();
     }
 
-    /** 變更密碼第 1 階段：把新金鑰加密的 Webhook 寫到暫存欄位。 */
-    synchronized void stagePendingWebhook(String encrypted) throws IOException {
-        props.setProperty("chat.webhook.enc.pending", encrypted);
+    /** 是否已設定（不需登入即可判斷，不解密）。 */
+    synchronized boolean hasSecret(String key) {
+        return !props.getProperty(key, "").isEmpty();
+    }
+
+    /** 變更密碼第 1 階段：把新金鑰加密的值寫到暫存欄位。 */
+    synchronized void stagePendingSecret(String key, String encrypted) throws IOException {
+        props.setProperty(key + ".pending", encrypted);
         saveProps();
     }
+
+    /** 相容 v1.7.1 的測試與呼叫。 */
+    synchronized void stagePendingWebhook(String encrypted) throws IOException { stagePendingSecret(SECRET_WEBHOOK, encrypted); }
 
     /**
      * 變更密碼第 3 階段（或登入時收尾）：暫存欄位能用目前金鑰解密 → 換成正式欄位；不能 → 丟棄暫存欄位。
      */
-    synchronized void resolvePendingWebhook(javax.crypto.SecretKey key) throws IOException {
-        String pending = props.getProperty("chat.webhook.enc.pending");
-        if (pending == null) return;
-        boolean ok;
-        try {
-            Crypto.decrypt(key, pending);
-            ok = true;
-        } catch (IllegalStateException e) {
-            ok = false;
+    synchronized void resolvePendingSecrets(javax.crypto.SecretKey key) throws IOException {
+        boolean changed = false;
+        for (String k : SECRET_KEYS) {
+            String pending = props.getProperty(k + ".pending");
+            if (pending == null) continue;
+            boolean ok;
+            try {
+                Crypto.decrypt(key, pending);
+                ok = true;
+            } catch (IllegalStateException e) {
+                ok = false;
+            }
+            if (ok) props.setProperty(k, pending);
+            props.remove(k + ".pending");
+            changed = true;
         }
-        if (ok) props.setProperty("chat.webhook.enc", pending);
-        props.remove("chat.webhook.enc.pending");
+        if (changed) saveProps();
+    }
+
+    /** 忘記密碼重設帳號時：舊金鑰加密的資料已無法解密，直接清除。 */
+    synchronized void clearSecrets() throws IOException {
+        for (String k : SECRET_KEYS) { props.remove(k); props.remove(k + ".pending"); }
         saveProps();
     }
+
+    // ---------- Google Chat ----------
+    public synchronized String getWebhookUrl() { return getSecret(SECRET_WEBHOOK); }
+
+    public synchronized void setWebhookUrl(String url) throws IOException { setSecret(SECRET_WEBHOOK, url); }
 
     /** 是否已設定 Webhook（不需登入即可判斷，不解密）。 */
-    public synchronized boolean hasWebhook() {
-        return !props.getProperty("chat.webhook.enc", "").isEmpty();
+    public synchronized boolean hasWebhook() { return hasSecret(SECRET_WEBHOOK); }
+
+    // ---------- LINE（v1.8） ----------
+    /** LINE 推播對象：push = 指定的使用者／群組 ID；broadcast = 官方帳號的所有好友。 */
+    public enum LineMode { PUSH, BROADCAST }
+
+    public synchronized boolean isLineEnabled() { return "true".equals(props.getProperty("line.enabled")); }
+    public synchronized LineMode getLineMode() {
+        return "broadcast".equalsIgnoreCase(props.getProperty("line.mode", "push")) ? LineMode.BROADCAST : LineMode.PUSH;
+    }
+    public synchronized List<String> getLineTo() { return splitList(props.getProperty("line.to", "")); }
+    public synchronized String getLineToken() { return getSecret(SECRET_LINE_TOKEN); }
+    public synchronized boolean hasLineToken() { return hasSecret(SECRET_LINE_TOKEN); }
+
+    /** 儲存 LINE 設定；token 為 null 表示不變更。 */
+    public synchronized void setLine(boolean enabled, LineMode mode, List<String> to, String token) throws IOException {
+        props.setProperty("line.enabled", String.valueOf(enabled));
+        props.setProperty("line.mode", mode == LineMode.BROADCAST ? "broadcast" : "push");
+        props.setProperty("line.to", String.join(",", to));
+        if (token != null) setSecret(SECRET_LINE_TOKEN, token); else saveProps();
     }
 
-    /** 忘記密碼重設帳號時：舊金鑰加密的 Webhook 已無法解密，直接清除。 */
-    synchronized void clearWebhook() throws IOException {
-        props.remove("chat.webhook.enc");
-        props.remove("chat.webhook.enc.pending");
-        saveProps();
+    /** LINE 是否設定完整（可推播）。 */
+    public synchronized boolean isLineReady() {
+        return isLineEnabled() && hasLineToken() && (getLineMode() == LineMode.BROADCAST || !getLineTo().isEmpty());
+    }
+
+    // ---------- Gmail（v1.8） ----------
+    public synchronized boolean isEmailEnabled() { return "true".equals(props.getProperty("email.enabled")); }
+    public synchronized String getEmailFrom() { return props.getProperty("email.from", ""); }
+    public synchronized List<String> getEmailTo() { return splitList(props.getProperty("email.to", "")); }
+    public synchronized String getEmailPassword() { return getSecret(SECRET_GMAIL_PASSWORD); }
+    public synchronized boolean hasEmailPassword() { return hasSecret(SECRET_GMAIL_PASSWORD); }
+
+    /** 儲存 Gmail 設定；password 為 null 表示不變更。 */
+    public synchronized void setEmail(boolean enabled, String from, List<String> to, String password) throws IOException {
+        props.setProperty("email.enabled", String.valueOf(enabled));
+        props.setProperty("email.from", from == null ? "" : from.trim());
+        props.setProperty("email.to", String.join(",", to));
+        if (password != null) setSecret(SECRET_GMAIL_PASSWORD, password); else saveProps();
+    }
+
+    public synchronized boolean isEmailReady() {
+        return isEmailEnabled() && hasEmailPassword() && !getEmailFrom().isEmpty() && !getEmailTo().isEmpty();
+    }
+
+    /** 逗號、分號、空白或換行分隔的清單。 */
+    static List<String> splitList(String s) {
+        List<String> out = new ArrayList<>();
+        for (String x : s.split("[,;\\s]+")) if (!x.isBlank() && !out.contains(x.trim())) out.add(x.trim());
+        return out;
+    }
+
+    /** 是否有任何可用的推播管道（Google Chat、LINE、Gmail）。 */
+    public synchronized boolean hasAnyNotifier() {
+        return (isChatEnabled() && hasWebhook()) || isLineReady() || isEmailReady();
     }
 
     public synchronized boolean isChatEnabled() {

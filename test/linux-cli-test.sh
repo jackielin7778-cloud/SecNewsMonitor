@@ -144,6 +144,18 @@ out=$(printf 'https://evil.example.com/x\n' | SECNEWS_PASSWORD=NewPass99 run --s
 check "set-webhook rejects non-google" '[ $rc -eq 1 ]'
 out=$(printf '%s\n' "$HOOK" | SECNEWS_PASSWORD=NewPass99 run --set-webhook); rc=$?
 check "set-webhook ok" '[ $rc -eq 0 ]'
+# v1.8：LINE、Gmail
+UID1="U0123456789abcdef0123456789abcdef"
+out=$(printf 'TOKEN123\n1\nU123\n' | SECNEWS_PASSWORD=NewPass99 run --set-line); rc=$?
+check "set-line rejects bad id" '[ $rc -eq 1 ] && [[ "$out" == *"格式不符"* ]]'
+out=$(printf 'TOKEN123\n1\n%s\n' "$UID1" | SECNEWS_PASSWORD=NewPass99 run --set-line); rc=$?
+check "set-line ok" '[ $rc -eq 0 ]'
+out=$(printf 'me@gmail.com\nabcd efgh ijkl mnop\na@ex.com, b@ex.com\n' | SECNEWS_PASSWORD=NewPass99 run --set-email); rc=$?
+check "set-email ok" '[ $rc -eq 0 ]'
+out=$(run --status); check "status shows line/gmail" '[[ "$out" == *"LINE          ：已設定，啟用，1 位收件人"* ]] && [[ "$out" == *"Gmail         ：已設定，啟用，2 位收件人"* ]]'
+check "secrets encrypted on disk" '! grep -rq "TOKEN123\|abcdefghijklmnop" "$SECNEWS_HOME/channels"'
+out=$(printf '\n' | SECNEWS_PASSWORD=NewPass99 run --set-line); rc=$?
+check "set-line clear" '[ $rc -eq 0 ] && [[ "$out" == *"已停用並清除"* ]]'
 
 # 8. 程式資料夾內的 JDK（PATH 上沒有 java 也能執行）
 APP="$WORK/app"; mkdir -p "$APP"

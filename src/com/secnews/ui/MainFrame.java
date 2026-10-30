@@ -134,7 +134,7 @@ public final class MainFrame extends JFrame {
             tabs.insertTab("監控關鍵字", null, new KeywordsPanel(current), null, k++);
         }
         tabs.insertTab("監控排程", null, schedulePanel, null, k++);
-        tabs.insertTab("Google Chat 設定", null, new ChatPanel(current, monitor), null, k++);
+        tabs.insertTab("推播設定", null, new NotifyPanel(current, monitor, this::updateChannelInfo), null, k++);
         channelTabs = k;
         if (onLog) tabs.setSelectedIndex(k);
         else if (sel >= 0 && sel < k) tabs.setSelectedIndex(sel);
@@ -169,7 +169,7 @@ public final class MainFrame extends JFrame {
     private void updateChannelInfo() {
         if (current == null) return;
         java.time.ZonedDateTime t = scheduler.nextRunAt(current);
-        String hook = current.hasWebhook() ? "" : "　⚠ 尚未設定 Webhook";
+        String hook = current.hasAnyNotifier() ? "" : "　⚠ 尚未設定推播（Google Chat／LINE／Gmail）";
         channelInfo.setText(!current.isEnabled() ? "此頻道已停用，不會自動執行" + hook
                 : (t == null ? "下次執行：—" : "下次執行：" + t.format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))) + hook);
         channelBox.repaint();
