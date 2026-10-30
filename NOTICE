@@ -6,7 +6,15 @@ Copyright (c) 2026 GateWeb (關網資訊). All rights reserved.
 ----------
 本程式只使用 Java 標準函式庫（java.*、javax.*），不包含任何第三方函式庫。
 執行時需要 Java 17 以上的 OpenJDK 發行版（例如 Eclipse Temurin），
-OpenJDK 以 GPLv2 with Classpath Exception 授權；本發佈檔不包含 JDK。
+OpenJDK 以 GPLv2 with Classpath Exception 授權。
+
+內附 Java 的發佈檔（SecNewsMonitor-x.x.x-windows-x64.zip、-mac-apple.zip、-mac-intel.zip）
+包含未經修改的 Eclipse Temurin 21 JRE（資料夾 jdk-21.0.13+9-jre），由 Eclipse Adoptium 發佈：
+  - 授權：GPLv2 with Classpath Exception；各元件授權檔在 jdk-21.0.13+9-jre/legal/
+    （macOS 為 jdk-21.0.13+9-jre/Contents/Home/legal/），請勿刪除。
+  - 原始碼：https://github.com/adoptium/jdk21u（標籤 jdk-21.0.13+9）
+  - 下載來源：https://github.com/adoptium/temurin21-binaries/releases/tag/jdk-21.0.13%2B9
+內附的 Java 只供本程式使用，不會安裝到系統、不會修改 PATH、JAVA_HOME 或其他程式使用的 Java。
 自動測試使用 JDK 內建的 com.sun.net.httpserver（不包含在發佈的 jar 中）。
 
 新聞內容

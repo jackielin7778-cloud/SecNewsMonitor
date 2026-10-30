@@ -2,6 +2,8 @@
 # macOS 啟動腳本：在 Finder 雙擊即可執行（第一次請在終端機執行 chmod +x run-mac.command）
 # 會自動尋找 Java 17 以上的 JDK；系統預設是 Java 8 也沒關係，不會改動預設值。
 cd "$(dirname "$0")" || exit 1
+# 已經在「隱私權與安全性」允許過一次後，移除本資料夾（含內附的 Java）的下載隔離標記，之後點兩下就不會再被擋。
+xattr -dr com.apple.quarantine "$(pwd)" 2>/dev/null
 
 java_major() {   # 傳入 java 執行檔路徑，輸出主版本號（1.8 → 8）
   "$1" -version 2>&1 | awk -F'"' '/version/ {print $2; exit}' | awk -F. '{ if ($1=="1") print $2; else print $1 }'
