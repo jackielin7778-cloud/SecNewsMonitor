@@ -184,7 +184,8 @@ public class V16Test {
                     p("P2", "Apple iPhone Duo 5G 一體成型-保護殼", 699, 699),
                     p("P3", "Apple iPhone Duo 512GB 黑", 59900, 62900)));
             List<String> tr = ms2.testProduct(rc, ex);
-            check("test marks reasons", tr.get(0).contains("含排除字") && tr.get(1).startsWith("✗") && tr.get(2).startsWith("✓"));
+            check("test marks reasons", tr.size() == 3 && tr.get(0).startsWith("✓") && tr.get(0).contains("512GB")
+                    && tr.stream().anyMatch(x -> x.startsWith("✗") && x.contains("含排除字")));
             List<String[]> sent2 = Collections.synchronizedList(new ArrayList<>());
             ms2.sender = (u, x) -> sent2.add(new String[]{u, x});
             List<MonitorService.Hit> hx = ms2.runChannel(rc, "t9");

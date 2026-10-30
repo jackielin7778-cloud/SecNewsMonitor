@@ -108,7 +108,7 @@ printf 'Phone\tTest Phone\t256GB\t10000\ttrue\n' > "$CP/products.tsv"
 printf 'chat.enabled=false\nproduct.searchUrl=http\://127.0.0.1\:%s/search/results.json?q\={q}\n' "$PORT" >> "$CP/channel.properties"
 out=$(SECNEWS_PASSWORD=$PW run --run-once --channel "商品"); rc=$?
 check "product run-once below threshold" '[ $rc -eq 0 ] && [[ "$out" == *"Test Phone 256GB"* ]] && [[ "$out" == *"通知 1 件"* ]]'
-out=$(run --status); check "status shows product channel" '[[ "$out" == *"商品監控（PChome 24h）"* ]] && [[ "$out" == *"上限 NT\$10000"* ]]'
+out=$(run --status); check "status shows product channel" '[[ "$out" == *"商品監控（PChome）"* ]] && [[ "$out" == *"上限 NT\$10000"* ]]'
 out=$(run --delete-channel "商品" --yes); rc=$?; check "delete product channel" '[ $rc -eq 0 ]'
 
 # 6. --headless 常駐、鎖、停止訊號

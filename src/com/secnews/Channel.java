@@ -136,6 +136,39 @@ public final class Channel {
 
     /** 商品上次看到的價格：鍵為「監控名稱<TAB>商品ID」。 */
     private Map<String, Integer> productPrices;
+    /** 上次看到的庫存狀態（只有提供庫存資訊的網站才有）：true = 有貨。 */
+    private final Map<String, Boolean> productStock = new java.util.HashMap<>();
+
+    public synchronized Boolean lastStock(String watch, String productId) throws IOException {
+        prices();
+        return productStock.get(norm(watch) + "\t" + norm(productId));
+    }
+
+    public synchronized void setStock(String watch, String productId, Boolean inStock) throws IOException {
+        prices();
+        String k = norm(watch) + "\t" + norm(productId);
+        if (inStock == null) productStock.remove(k); else productStock.put(k, inStock);
+    }
+
+    /** 讀取頻道設定（給商品監控各網站的網址樣板用，可在 channel.properties 覆寫）。 */
+    public synchronized String getProp(String key, String def) {
+        return props.getProperty(key, def);
+    }
+
+    /** 商品頻道要搜尋的網站（pchome、momo、ruten），逗號分隔；預設只有 PChome。 */
+    public synchronized List<String> getProductSites() {
+        List<String> l = new ArrayList<>();
+        for (String x : props.getProperty("product.sites", "pchome").split(",")) {
+            x = x.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!x.isEmpty() && !l.contains(x)) l.add(x);
+        }
+        return l;
+    }
+
+    public synchronized void setProductSites(List<String> sites) throws IOException {
+        props.setProperty("product.sites", String.join(",", sites));
+        saveProps();
+    }
 
     private Map<String, Integer> prices() throws IOException {
         if (productPrices != null) return productPrices;
@@ -146,6 +179,7 @@ public final class Channel {
                 String[] p = line.split("\t", -1);
                 if (p.length < 3) continue;
                 try { productPrices.put(p[0] + "\t" + p[1], Integer.parseInt(p[2])); } catch (NumberFormatException ignored) {}
+                if (p.length > 3 && !p[3].isEmpty()) productStock.put(p[0] + "\t" + p[1], "1".equals(p[3]));
             }
         }
         return productPrices;
@@ -174,7 +208,7 @@ public final class Channel {
         for (String k : keys) {
             String w = k.substring(0, k.indexOf('\t'));
             int c = count.merge(w, 1, Integer::sum);
-            if (!keep.contains(w) || c > RECENT_EXTRA) m.remove(k);
+            if (!keep.contains(w) || c > RECENT_EXTRA) { m.remove(k); productStock.remove(k); }
         }
     }
 
@@ -190,7 +224,9 @@ public final class Channel {
         if (productPrices != null) {
             StringBuilder sb = new StringBuilder();
             for (Map.Entry<String, Integer> e : productPrices.entrySet()) {
-                sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
+                Boolean st = productStock.get(e.getKey());
+                sb.append(e.getKey()).append('\t').append(e.getValue())
+                  .append('\t').append(st == null ? "" : st ? "1" : "0").append('\n');
             }
             Store.writeAtomic(dir.resolve("product-state.tsv"), sb.toString());
         }
@@ -377,6 +413,7 @@ public final class Channel {
                 .filter(k -> k.startsWith("site.baseline.") || k.startsWith("product.baseline."))
                 .toList().forEach(props::remove);
         productPrices = new LinkedHashMap<>();
+        productStock.clear();
         Store.writeAtomic(dir.resolve("product-state.tsv"), "");
         flushSeen();
     }

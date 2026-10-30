@@ -196,11 +196,23 @@ public final class MonitorService {
     /** 商品頻道的「測試搜尋」。 */
     public List<String> testProduct(Channel ch, ProductWatch w) throws Exception {
         List<String> out = new ArrayList<>();
-        for (ProductMonitor.Product p : products.search(ch, w)) {
-            String why = w.rejectReason(p.name, p.price);
-            out.add((why == null ? "✓ " : "✗ ") + "NT$" + ProductMonitor.fmt(p.price) + "  " + p.name
-                    + (why == null ? "" : "（" + why + "）"));
+        List<String> sites = ch.getProductSites();
+        List<String> errors = new ArrayList<>();
+        for (String site : sites) {
+            try {
+                for (ProductMonitor.Product p : products.search(ch, w, site)) {
+                    String why = w.rejectReason(p.name, p.price);
+                    out.add((why == null ? "✓ " : "✗ ") + (sites.size() > 1 ? "[" + ProductMonitor.siteLabel(site) + "] " : "")
+                            + "NT$" + ProductMonitor.fmt(p.price) + (Boolean.FALSE.equals(p.inStock) ? "（缺貨）" : "")
+                            + "  " + p.name + (why == null ? "" : "（" + why + "）"));
+                }
+            } catch (Exception e) {
+                if (sites.size() == 1) throw e;
+                errors.add("[" + ProductMonitor.siteLabel(site) + "] 失敗：" + e.getMessage());
+            }
         }
+        out.sort((a, b) -> Boolean.compare(b.startsWith("✓"), a.startsWith("✓")));   // 符合的排前面
+        out.addAll(0, errors);
         return out;
     }
 

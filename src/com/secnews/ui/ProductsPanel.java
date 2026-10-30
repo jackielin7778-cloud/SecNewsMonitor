@@ -31,9 +31,17 @@ final class ProductsPanel extends JPanel {
         notify.add(notifyBox("新商品", "new", "搜尋結果出現之前沒看過的商品"));
         notify.add(notifyBox("低於設定價格", "below", "商品價格 ≤ 該項目的價格上限（每件商品只通知一次，價格回升後再降到上限以下會再通知）"));
         notify.add(notifyBox("降價", "drop", "比上次看到的價格便宜"));
-        top.add(notify, BorderLayout.NORTH);
-        JLabel hint = new JLabel("<html><div style='width:760px'><small>來源：PChome 24h 搜尋（網站內部的搜尋介面，非官方 API，網站改版時可能失效；"
-                + "每次抓取前會檢查 robots.txt）。目前無法判斷庫存，因此不提供補貨通知。"
+        notify.add(notifyBox("補貨（momo、露天）", "restock", "上次缺貨、這次有貨（PChome 搜尋結果沒有庫存資訊）"));
+        JPanel sitesRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        sitesRow.add(new JLabel("搜尋網站："));
+        for (String site : new String[]{"pchome", "momo", "ruten"}) sitesRow.add(siteBox(site));
+        sitesRow.add(new JLabel("（每個商品會在勾選的網站各搜尋一次，可跨網站比價）"));
+        JPanel rows = new JPanel(new GridLayout(0, 1));
+        rows.add(sitesRow);
+        rows.add(notify);
+        top.add(rows, BorderLayout.NORTH);
+        JLabel hint = new JLabel("<html><div style='width:760px'><small>資料來源為各網站本身使用的搜尋資料（非官方 API，網站改版時可能失效；每次抓取前會檢查 robots.txt）。"
+                + "PChome 搜尋結果沒有庫存資訊，補貨通知只適用 momo、露天。"
                 + "第一次搜尋只記錄現有商品、不通知新商品，但會通知已低於設定價格的商品。</small></div></html>");
         hint.setForeground(new Color(0x616161));
         top.add(hint, BorderLayout.SOUTH);
@@ -70,6 +78,27 @@ final class ProductsPanel extends JPanel {
             try {
                 store.setNotify(kind, cb.isSelected());
                 AppLog.info("[" + store.getName() + "] 通知條件「" + label + "」" + (cb.isSelected() ? "已啟用" : "已停用"));
+            } catch (Exception ex) {
+                UiUtil.error(this, "儲存失敗", ex);
+            }
+        });
+        return cb;
+    }
+
+    private JCheckBox siteBox(String site) {
+        String label = switch (site) { case "momo" -> "momo"; case "ruten" -> "露天"; default -> "PChome 24h"; };
+        JCheckBox cb = new JCheckBox(label, store.getProductSites().contains(site));
+        cb.addActionListener(e -> {
+            List<String> l = new ArrayList<>(store.getProductSites());
+            if (cb.isSelected()) { if (!l.contains(site)) l.add(site); } else l.remove(site);
+            if (l.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "至少要勾選一個網站");
+                cb.setSelected(true);
+                return;
+            }
+            try {
+                store.setProductSites(l);
+                AppLog.info("[" + store.getName() + "] 搜尋網站：" + String.join("、", l));
             } catch (Exception ex) {
                 UiUtil.error(this, "儲存失敗", ex);
             }
@@ -138,8 +167,8 @@ final class ProductsPanel extends JPanel {
                 try {
                     List<String> l = get();
                     long ok = l.stream().filter(s -> s.startsWith("✓")).count();
-                    StringBuilder sb = new StringBuilder("搜尋到 " + l.size() + " 件，符合條件 " + ok + " 件（✓ 符合、✗ 排除並註明原因），前 15 件：\n\n");
-                    for (int i = 0; i < Math.min(15, l.size()); i++) sb.append(l.get(i)).append('\n');
+                    StringBuilder sb = new StringBuilder("搜尋到 " + l.size() + " 件，符合條件 " + ok + " 件（✓ 符合、✗ 排除並註明原因），前 30 件：\n\n");
+                    for (int i = 0; i < Math.min(30, l.size()); i++) sb.append(l.get(i)).append('\n');
                     JTextArea area = new JTextArea(sb.toString(), 18, 70);
                     area.setEditable(false);
                     JOptionPane.showMessageDialog(ProductsPanel.this, new JScrollPane(area), "測試搜尋：" + w.name,

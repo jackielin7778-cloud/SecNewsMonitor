@@ -155,9 +155,11 @@ final class Cli {
                     + "；只推播 " + (sc.maxAgeDays == 0 ? "不限天數" : sc.maxAgeDays + " 天內") + "的文章");
             if (ch.isProduct()) {
                 List<ProductWatch> ps = ch.loadProducts();
-                OUT.println("類型          ：商品監控（PChome 24h）；通知："
+                List<String> sl = new java.util.ArrayList<>();
+                for (String x : ch.getProductSites()) sl.add(ProductMonitor.siteLabel(x));
+                OUT.println("類型          ：商品監控（" + String.join("、", sl) + "）；通知："
                         + (ch.isNotify("new") ? "新商品 " : "") + (ch.isNotify("below") ? "低於設定價格 " : "")
-                        + (ch.isNotify("drop") ? "降價" : ""));
+                        + (ch.isNotify("drop") ? "降價 " : "") + (ch.isNotify("restock") ? "補貨" : ""));
                 OUT.println("商品          ：共 " + ps.size());
                 for (ProductWatch w : ps) {
                     OUT.println("  " + (w.enabled ? "[✓]" : "[ ]") + " " + w.name + "  搜尋「" + w.query + "」"

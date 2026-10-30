@@ -6,6 +6,6 @@ cd "$(dirname "$0")"
 rm -rf build && mkdir -p build/classes
 javac --release 8 -encoding UTF-8 -d build/classes src/com/secnews/Launcher.java
 javac --release 17 -encoding UTF-8 -d build/classes $(find src -name '*.java' ! -name Launcher.java)
-printf 'Main-Class: com.secnews.Launcher\nImplementation-Version: 1.6.2\n' > build/MANIFEST.MF
+printf 'Main-Class: com.secnews.Launcher\nImplementation-Version: 1.7.0\n' > build/MANIFEST.MF
 jar --create --file SecNewsMonitor.jar --manifest build/MANIFEST.MF -C build/classes .
 echo "完成：SecNewsMonitor.jar"

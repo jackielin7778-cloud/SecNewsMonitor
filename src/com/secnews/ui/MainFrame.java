@@ -176,7 +176,7 @@ public final class MainFrame extends JFrame {
 
     private void addChannel() {
         if (schedulePanel != null && !schedulePanel.confirmLeave()) return;
-        Object[] types = {"新聞監控（網站＋關鍵字）", "商品監控（PChome 24h）"};
+        Object[] types = {"新聞監控（網站＋關鍵字）", "商品監控（PChome／momo／露天）"};
         Object t = JOptionPane.showInputDialog(this, "頻道類型：", "新增頻道", JOptionPane.PLAIN_MESSAGE, null, types, types[0]);
         if (t == null) return;
         boolean product = t == types[1];
@@ -191,7 +191,7 @@ public final class MainFrame extends JFrame {
             tabs.setSelectedIndex(0);
             JOptionPane.showMessageDialog(this, product
                     ? "<html>已新增商品監控頻道「" + escape(c.getName()) + "」。接下來請設定：<br>"
-                    + "1. 商品清單：新增要監控的商品（搜尋關鍵字、價格上限），按「測試搜尋」確認<br>"
+                    + "1. 商品清單：勾選搜尋網站，新增要監控的商品（搜尋關鍵字、價格範圍、排除字），按「測試搜尋」確認<br>"
                     + "2. 監控排程（建議每 30～60 分鐘）<br>3. Google Chat 設定：貼上要推播的聊天室 Webhook</html>"
                     : "<html>已新增頻道「" + escape(c.getName()) + "」。接下來請設定：<br>"
                     + "1. 網站列表：新增網站，或按「匯入…」載入網站清單檔（例如 docs/ai-sites.tsv）<br>"
