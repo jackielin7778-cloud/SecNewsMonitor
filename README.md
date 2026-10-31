@@ -1,11 +1,33 @@
 # SecNewsMonitor 資安新聞監控
 
-定時抓取台灣資安新聞網站（RSS），比對關鍵字（例如 Java、Tomcat），
-有新文章就推播到 Google Chat。純 Java（JDK 17 以上），**不需任何第三方套件**，
-同一個 `SecNewsMonitor.jar` 可在 Windows、macOS、Linux 執行（Linux 伺服器可用無介面模式＋systemd）。
+定時監控新聞網站與購物網站，符合條件就推播到 **Google Chat、LINE 或 Gmail**。
+有視窗介面（Windows、macOS）與無介面模式（Linux 伺服器＋systemd），資料加密保存在自己的電腦，不經過任何雲端服務。
 
-v1.5 起支援**多頻道**：例如「資安新聞」推到資安聊天室、「AI 新聞」推到 AI 聊天室，
-每個頻道有自己的網站列表、關鍵字、排程與 Google Chat Webhook。
+**目前版本：v1.8.0**　｜　[下載（Releases）](https://github.com/jackielin7778-cloud/SecNewsMonitor/releases/latest)　｜　[版本紀錄](CHANGELOG.md)　｜　[授權](LICENSE)
+
+## 主要功能
+
+| 功能 | 說明 |
+|---|---|
+| 新聞監控 | 抓取網站的 RSS／HTML，比對關鍵字（標題、摘要，可選全文比對）；預設台灣資安新聞來源，也可自行加入網站 |
+| 商品監控 | 在 PChome 24h、momo、露天搜尋指定商品，通知新商品、低於設定價格、降價、補貨 |
+| 多頻道 | 每個頻道有自己的網站或商品、關鍵字、排程與推播對象，例如「資安新聞」與「AI 新聞」分開推播 |
+| 推播管道 | Google Chat、LINE（官方帳號 Messaging API）、Gmail，可同時啟用；失敗的管道下次執行自動補送 |
+| 排程 | 每隔 N 分鐘（可限制時段與星期）、每日或每週指定時間 |
+| 安全 | 登入帳號保護；Webhook、LINE Token、Gmail 應用程式密碼以 AES-GCM 加密保存；經過外部安全分析與獨立資安審查（見 [SECURITY-CHECKLIST.md](SECURITY-CHECKLIST.md)） |
+
+## 快速開始
+
+下載 [Releases](https://github.com/jackielin7778-cloud/SecNewsMonitor/releases/latest) 中對應的壓縮檔，**已內附 Java，不用另外安裝**，也不會更動電腦裡的其他軟體：
+
+| 電腦 | 檔案 | 啟動 |
+|---|---|---|
+| Windows | `SecNewsMonitor-x.x.x-windows-x64.zip` | 解壓縮後點兩下 `run-windows.bat` |
+| Mac（Apple M 晶片） | `SecNewsMonitor-x.x.x-mac-apple.zip` | 解壓縮後點兩下 `run-mac.command` |
+| Mac（Intel） | `SecNewsMonitor-x.x.x-mac-intel.zip` | 同上 |
+| 已安裝 Java 17 以上／Linux | `SecNewsMonitor-x.x.x.zip` | 見下方第 1、2 節與「Linux 伺服器」 |
+
+第一次啟動會要求建立管理員帳號，接著到「推播設定」設定 Google Chat、LINE 或 Gmail（見第 5 節）。
 
 ## 1. 執行環境
 
@@ -202,7 +224,9 @@ v1.1 以前因單一網站項目太多（例如 Microsoft Security Update Guide 
 
 使用 HTML 模式抓取網站前，請先確認該網站的使用條款與 robots.txt 允許。
 
-## 5. Google Chat Webhook
+## 5. 推播設定（Google Chat、LINE、Gmail）
+
+### Google Chat Webhook
 
 1. Google Chat 開啟要接收通知的聊天室（Space）
 2. 聊天室名稱 → 應用程式與整合（Apps & integrations）→ Webhook → 新增
@@ -374,12 +398,12 @@ journalctl -u secnewsmonitor -f        # 查看執行紀錄
 資安靜態掃描：`./security-scan.sh`（Windows：`security-scan.bat`）。使用 SpotBugs 4.9.2＋Find Security Bugs 1.14.0 掃描 `SecNewsMonitor.jar`，
 第一次執行會下載工具到 `tools/`（需要網路，下載後驗證雜湊值），報告在 `build/security-scan.html`。
 
-**提交到版控**：`src/`、`test/`、`docs/`、建置／執行／測試腳本、`README.md`、`CHANGELOG.md`、`.gitignore`、`.gitattributes`。
+**提交到版控**：`src/`、`test/`、`docs/`、建置／執行／測試／掃描腳本、`README.md`、`CHANGELOG.md`、`LICENSE`、`NOTICE`、`SECURITY-CHECKLIST.md`、`.gitignore`、`.gitattributes`。
 
 **不提交**（`.gitignore` 已排除）：
 - `build/`、`SecNewsMonitor.jar`、`*.zip`：由 `build.sh`／`build.bat` 產生，改放在發佈區（例如 Git 的 Release／Tag 附件或公司檔案伺服器）
 - `jdk*/`：第三方 JDK（約 200 MB），部署時另外下載放入
-- `config.properties`、`channels/`、`seen.txt`、`logs/` 等執行期資料：**含密碼雜湊與加密的 Google Chat Webhook，絕對不可提交**
+- `config.properties`、`channels/`、`seen.txt`、`logs/` 等執行期資料：**含密碼雜湊與加密的 Webhook、LINE Token、Gmail 應用程式密碼，絕對不可提交**
 
 **測試**：`./run-tests.sh`（macOS／Linux）或 `run-tests.bat`（Windows），不需網路與圖形介面。修改程式後、提交前請先執行。
 Linux 另有命令列整合測試：先 `./build.sh`，再 `./test/linux-cli-test.sh`（需要 python3）。
@@ -387,7 +411,7 @@ Linux 另有命令列整合測試：先 `./build.sh`，再 `./test/linux-cli-tes
 **發佈新版本**：
 1. 更新 `build.sh`／`build.bat` 中的 `Implementation-Version`，並在 `CHANGELOG.md` 記錄變更
 2. 執行測試 → 建置 jar
-3. 提交並打上版本標籤（例如 `git tag v1.2.0`），jar 放到發佈區
+3. 提交並在 GitHub 建立 Release（標籤例如 `v1.8.0`），把 4 個 zip 上傳為附件
 
 **換行字元**：`.gitattributes` 已設定 `.bat` 為 CRLF、`.sh`／`.command` 為 LF。
 在 Windows 上首次提交 `.sh`／`.command` 時，請執行
