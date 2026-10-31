@@ -3,9 +3,9 @@
 ## 1.8.0 — 2026-10-30
 - **新增**：LINE 推播（LINE 官方帳號 Messaging API；LINE Notify 已於 2025-03-31 停止服務）。可推給指定的使用者 ID，或官方帳號的所有好友。台灣免費方案每月 200 則，超過時執行紀錄會說明原因。
 - **新增**：Gmail 通知（smtp.gmail.com:465，全程 TLS 並驗證主機名稱，使用 Google 應用程式密碼）。可寄給多位收件人。
-- **新增**：每個頻道可同時啟用 Google Chat、LINE、Gmail。至少一個管道成功就視為已送出；全部失敗時下次執行再推播。
+- **新增**：每個頻道可同時啟用 Google Chat、LINE、Gmail，各管道各自處理（失敗的管道見下方「待重送佇列」）。
 - **變更**：「Google Chat 設定」分頁改為「推播設定」，內含 Google Chat、LINE、Gmail 三個子分頁。
-- **新增**：命令列 `--set-line`、`--set-email`；`--test-chat` 改為測試此頻道所有已設定的推播管道（也可寫成 `--test-notify`）；`--status` 顯示 LINE、Gmail 狀態。
+- **新增**：命令列 `--set-line`、`--set-email`；`--test-chat` 改為測試此頻道已啟用的推播管道（也可寫成 `--test-notify`）；`--status` 顯示 LINE、Gmail 狀態。
 - **安全**：LINE Token、Gmail 應用程式密碼與 Webhook 一樣加密儲存，變更密碼時一併重新加密（可中斷復原），重設帳號時一併清除；郵件標頭與收件人經過檢查，防止標頭注入；LINE 重試使用 Retry-Key，避免重複傳送。
 - **改善**：依 SpotBugs 掃描結果小幅修正（Webhook 主機名稱比對改為嚴格比對等），判讀紀錄見 `docs/security-scan-triage.md`。
 - **新增**：待重送佇列。某個推播管道失敗時（LINE 只算失敗的收件人），那則通知會保留下來，下次執行只對失敗的管道重送，成功的管道不會重複收到；最多保留 3 天、每個管道 30 則。
