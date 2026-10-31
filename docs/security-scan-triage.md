@@ -3,6 +3,23 @@
 每次執行 `security-scan.sh`／`security-scan.bat` 後，把判讀結果記在這裡，下次掃描時只需要看新增的項目。
 「已修正」表示程式已改；「誤報／接受」要寫出理由。
 
+## 2026-10-31：v1.8.0（SpotBugs 4.9.2 + Find Security Bugs 1.14.0）
+
+共 118 項（高 2、中 29、低 87；5,747 行、76 個類別）。1.7.1 已修正的 Dm、UwF、UPM 不再出現。以下只列**新增或數量變動**的項目，其餘類別判讀同 1.7.1。
+
+| 代碼 | 數量 | 位置 | 判讀 |
+|---|---|---|---|
+| SECRD | 1 | `GmailClient` 的 Email 格式 regex | **誤報（已實測）**。檢查前已先限制長度 ≤ 254 字元；用 5 種刻意構造的輸入實測，每次比對都在 1 毫秒內完成，沒有大量回溯。 |
+| SECUS | 1 | `GmailClient` 使用一般 Socket | **接受（只在測試使用）**。一般 Socket 只在自動測試的 `plainForTest` 開啟時使用（連本機假伺服器）；正式寄信一律走 SSLSocket，並驗證主機名稱。這個開關無法從設定檔或命令列打開。 |
+| BC | 1 | `GmailClient.send` 把 Socket 轉型為 SSLSocket | **誤報**。`SSLSocketFactory.createSocket()` 依 Java API 規定一定回傳 SSLSocket。 |
+| DE | +1 | `Fetcher.closeAfter` | **接受（設計如此）**。逾時強制關閉連線時，關閉失敗不需處理。 |
+| SECUNI | 20（+2） | `Channel.getLineMode` 等 | **非漏洞**。新增的是設定值（push／broadcast）與名稱去重的不分大小寫比對，不涉及帳號或權限判斷。 |
+| EI2 | 6（+2） | `SchedulerService`、`MainFrame` 保存 `MonitorService` | **誤報**。共用的服務物件。 |
+| Se | +4 | `LinePanel`、`EmailPanel` | **接受（程式風格）**。Swing 面板不會被序列化。 |
+| THROWS、REC | 增加 | 新增的推播與畫面程式 | **接受（程式風格）**，理由同 1.7.1。 |
+
+**結論**：沒有需要修正的資安問題。1.8.0 的實際資安問題（robots.txt 萬用字元、推播回應時限、重設帳號復原、LINE 重送等）是由獨立審查找到並修正的，靜態掃描沒有偵測到這些類型。
+
 ## 2026-10-30：v1.7.1（SpotBugs 4.9.2 + Find Security Bugs 1.14.0）
 
 共 101 項：高 2、中 25、低 74。下表依類別判讀。
