@@ -392,3 +392,8 @@ Linux 另有命令列整合測試：先 `./build.sh`，再 `./test/linux-cli-tes
 **換行字元**：`.gitattributes` 已設定 `.bat` 為 CRLF、`.sh`／`.command` 為 LF。
 在 Windows 上首次提交 `.sh`／`.command` 時，請執行
 `git update-index --chmod=+x build.sh run-tests.sh run-mac.command run-linux.sh test/linux-cli-test.sh`，保留執行權限。
+
+## 授權
+
+Copyright (c) 2026 Jackie Lin. All rights reserved.
+原始碼公開供檢視，**不是開放原始碼軟體**。可以免費下載官方 Releases 未經修改的版本，供個人或組織內部使用；修改、重新散布、商業利用需事先取得書面同意。完整條款見 [LICENSE](LICENSE)，第三方元件見 [NOTICE](NOTICE)。

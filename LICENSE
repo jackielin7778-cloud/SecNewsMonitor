@@ -1,0 +1,48 @@
+SecNewsMonitor 使用授權（License）
+Copyright (c) 2026 Jackie Lin (jackielin7778@gmail.com). All rights reserved.
+
+本軟體的原始碼公開供檢視，但不是開放原始碼（open source）軟體。
+著作權人保留本軟體（含原始碼、執行檔、文件、畫面文字）的所有權利，
+除下列明確允許的事項外，未經著作權人書面同意，不得為任何其他利用。
+
+一、允許的事項
+1. 下載著作權人在官方 GitHub Releases 發佈、未經修改的版本，
+   供個人或組織內部免費安裝與使用。
+2. 在 GitHub 上檢視原始碼。依 GitHub 服務條款，其他 GitHub 使用者可在 GitHub 上
+   檢視與 fork（分叉）本 repository；此項不另外授予下列「不允許的事項」中的任何權利。
+
+二、不允許的事項（需事先取得著作權人書面同意）
+1. 修改、改作、翻譯本軟體，或以本軟體為基礎製作衍生作品。
+2. 重新散布、轉載、鏡像、重新打包或上傳到其他網站（官方 GitHub 的 fork 功能除外）。
+3. 出售、出租、再授權，或作為收費產品、收費服務的一部分。
+4. 移除或修改著作權聲明、本授權條款與 NOTICE 檔案。
+
+三、第三方元件
+內附 Java 的發佈檔包含未經修改的 Eclipse Temurin JRE，依其自身授權
+（GPLv2 with Classpath Exception）提供，不受本授權條款限制；詳見 NOTICE。
+
+四、免責聲明
+本軟體依「現狀」（AS IS）提供，不提供任何明示或默示的保證，
+包括但不限於適售性、特定用途適用性及不侵權。著作權人對使用本軟體所生的
+任何直接或間接損害，在法律允許的最大範圍內不負賠償責任。
+
+五、聯絡
+需要上述「不允許的事項」的授權，請聯絡：jackielin7778@gmail.com
+
+----------------------------------------------------------------------
+English summary (the Chinese text above prevails)
+
+Copyright (c) 2026 Jackie Lin. All rights reserved. The source code is published
+for viewing only; this is NOT open-source software.
+Permitted: downloading and using unmodified official releases from the official
+GitHub Releases, free of charge, for personal or internal organizational use;
+viewing the source on GitHub (GitHub users may view and fork this repository on
+GitHub as provided in the GitHub Terms of Service, which grants no further rights).
+Not permitted without prior written permission: modifying or creating derivative
+works; redistributing, mirroring or repackaging; selling, renting, sublicensing or
+using it as part of a paid product or service; removing copyright or license notices.
+The bundled Eclipse Temurin JRE is provided under its own license (GPLv2 with
+Classpath Exception); see NOTICE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. To the maximum
+extent permitted by law, the copyright holder is not liable for any damages
+arising from its use.
