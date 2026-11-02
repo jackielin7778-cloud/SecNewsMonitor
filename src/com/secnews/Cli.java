@@ -90,14 +90,25 @@ final class Cli {
         // 先取得鎖再讀取資料（v1.5 升級時會搬移設定檔，不可在其他執行個體執行中進行）
         boolean locked = App.acquireLock(Store.resolveDir());
         if (cmd == Command.STATUS) {
-            // v1.7.1：--status 也先取得鎖；其他執行個體執行中時只讀取、不寫入紀錄或搬移檔案
+            // v1.8.1（稽核 M5）：其他執行個體執行中（拿不到鎖）時，以唯讀方式開啟資料夾：不升級、不搬檔、不寫入任何檔案
             try {
-                Store store = new Store();
-                if (locked) {
-                    AppLog.init(store.logsDir(), store::getLogRetentionDays);
-                    App.logMigration(store);
+                if (!locked) {
+                    Store ro = Store.openReadOnly();
+                    if (ro.needsUpgrade()) {
+                        OUT.println("SecNewsMonitor " + version());
+                        OUT.println("資料夾        ：" + ro.dir());
+                        OUT.println("執行狀態      ：執行中");
+                        OUT.println();
+                        OUT.println("這個資料夾還是舊版格式，需要由程式升級；另一個執行個體正在執行，為避免互相覆寫，本次不讀取詳細設定。");
+                        OUT.println("請先停止執行中的程式（例如：systemctl stop secnewsmonitor，或結束系統匣圖示），再執行 --status。");
+                        return 0;
+                    }
+                    return status(ro, true);
                 }
-                return status(store, !locked);
+                Store store = new Store();
+                AppLog.init(store.logsDir(), store::getLogRetentionDays);
+                App.logMigration(store);
+                return status(store, false);
             } finally {
                 if (locked) App.releaseLock();
             }
@@ -166,6 +177,14 @@ final class Cli {
         OUT.println("資料夾        ：" + store.dir());
         OUT.println("執行狀態      ：" + (running ? "執行中" : "未執行"));
         OUT.println("帳號          ：" + (store.hasAccount() ? store.accountUser() : "（尚未建立，請執行 --setup）"));
+        if (store.hasAccount() && store.accountCreatedAt() > 0) {
+            OUT.println("帳號建立時間  ：" + formatTime(store.accountCreatedAt()));
+        }
+        if (store.accountResetAt() > 0) {
+            OUT.println("上次重設帳號  ：" + resetDescription(store) + "（若不是您本人操作，代表有人取得這台電腦的使用權）");
+        }
+        long lock = store.loginLockRemainingMs();
+        if (lock > 0) OUT.println("登入鎖定      ：登入連續失敗，還要 " + (lock / 1000 + 1) + " 秒才能再登入");
         OUT.println("紀錄檔        ：" + store.logsDir() + "（保留 "
                 + (store.getLogRetentionDays() == 0 ? "永久" : store.getLogRetentionDays() + " 天") + "）");
         OUT.println("頻道數        ：" + store.channels().size());
@@ -211,6 +230,10 @@ final class Cli {
         }
         return 0;
     }
+
+    static String formatTime(long ms) { return Store.formatTime(ms); }
+
+    static String resetDescription(Store store) { return store.accountResetDescription(); }
 
     private static int addChannel(Store store, String[] args) throws IOException {
         String name = args.length > 1 ? args[1] : null;
@@ -309,7 +332,7 @@ final class Cli {
         }
         if (pw == null) { ERR.println(reset ? "未重設，原帳號保持不變。" : "未建立帳號。"); return 1; }
         if (reset) {
-            store.resetAndCreateAccount(user, pw);       // v1.7.1：新帳密確認有效後才清除舊帳號
+            store.resetAndCreateAccount(user, pw, "命令列");       // v1.7.1：新帳密確認有效後才清除舊帳號
             AppLog.info("帳號已重設（命令列 --setup --reset），Webhook、LINE Token、Gmail 應用程式密碼已清除");
             OUT.println("已重設帳號。");
         } else {
@@ -497,7 +520,7 @@ final class Cli {
     }
 
     private static int headless(Store store, String[] args) throws Exception {
-        if (!login(store, args)) return 1;
+        if (!login(store, args, true)) return 1;
         AppLog.addListener(OUT::println);     // systemd 會把標準輸出收進 journal
         AppLog.info("以無介面模式啟動，版本 " + version() + "，資料夾：" + store.dir() + "，Java "
                 + System.getProperty("java.version") + "，" + System.getProperty("os.name"));
@@ -523,6 +546,11 @@ final class Cli {
     // ------------------------------------------------------------------ 登入與輸入
 
     private static boolean login(Store store, String[] args) throws IOException {
+        return login(store, args, false);
+    }
+
+    /** waitIfLocked：鎖定中時等待鎖定結束（只給無介面常駐模式使用）。 */
+    private static boolean login(Store store, String[] args, boolean waitIfLocked) throws IOException {
         if (!store.hasAccount()) {
             ERR.println("尚未建立帳號，請先執行 --setup");
             return false;
@@ -534,6 +562,15 @@ final class Cli {
             ERR.println("錯誤：" + e.getMessage());
             return false;
         }
+        long lock = store.loginLockRemainingMs();
+        if (lock > 0 && waitIfLocked) {
+            // 無介面服務：等鎖定結束再登入，避免服務因為有人輸錯密碼而無法啟動
+            AppLog.info("[警告] 登入暫時鎖定（連續輸錯密碼），" + (lock / 1000 + 1) + " 秒後再登入");
+            try { Thread.sleep(lock + 500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
+        } else if (lock > 0) {
+            ERR.println("登入連續失敗 " + Store.MAX_LOGIN_FAILS + " 次，已暫時鎖定，請 " + (lock / 1000 + 1) + " 秒後再試。");
+            return false;
+        }
         if (pw == null) pw = readPassword("帳號 " + store.accountUser() + " 的密碼：");
         if (pw == null) {
             ERR.println("沒有可用的密碼來源。無介面執行時請使用 --password-file、SECNEWS_PASSWORD_FILE 或 systemd credential。");
@@ -543,7 +580,12 @@ final class Cli {
             if (store.login(store.accountUser(), pw)) return true;
             AppLog.info("[錯誤] 命令列登入失敗：密碼錯誤");
             try { Thread.sleep(loginFailDelayMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-            ERR.println("密碼錯誤。忘記密碼請執行 --setup --reset");
+            long locked = store.loginLockRemainingMs();
+            if (locked > 0) {
+                ERR.println("密碼錯誤。已連續失敗 " + Store.MAX_LOGIN_FAILS + " 次，鎖定 " + (locked / 1000 + 1) + " 秒。忘記密碼請執行 --setup --reset");
+            } else {
+                ERR.println("密碼錯誤（再錯 " + (Store.MAX_LOGIN_FAILS - store.loginFailCount()) + " 次會暫時鎖定）。忘記密碼請執行 --setup --reset");
+            }
             return false;
         } finally {
             Arrays.fill(pw, '\0');
@@ -567,7 +609,10 @@ final class Cli {
             Path p = Paths.get(file);
             if (isReadableByOthers(p)) {
                 // v1.7.1：由警告改為拒絕使用
-                throw new IOException("密碼檔 " + p + " 其他使用者也能讀取，基於安全考量不使用。請執行：chmod 600 " + p);
+                throw new IOException("密碼檔 " + p + " 其他使用者也能讀取，基於安全考量不使用。"
+                        + (java.io.File.separatorChar == '\\'
+                            ? "請在檔案「內容 → 安全性」移除 Everyone、Users 等群組的讀取權限，只保留您自己"
+                            : "請執行：chmod 600 " + p));
             }
             String s = Files.readString(p, StandardCharsets.UTF_8);
             int end = s.length();
@@ -582,14 +627,42 @@ final class Cli {
         return env == null ? null : env.toCharArray();
     }
 
-    /** 群組或其他使用者可讀（Windows 等不支援 POSIX 權限時回傳 false）。 */
+    /**
+     * 群組或其他使用者可讀。
+     * Linux／macOS：檢查 POSIX 權限（群組或其他人可讀）。
+     * Windows（v1.8.1，稽核 M8）：檢查 ACL，Everyone、Users、Authenticated Users 等廣泛群組有讀取權時視為其他人可讀。
+     */
     static boolean isReadableByOthers(Path p) {
         try {
             Set<PosixFilePermission> perms = Files.getPosixFilePermissions(p);
             return perms.contains(PosixFilePermission.GROUP_READ) || perms.contains(PosixFilePermission.OTHERS_READ);
         } catch (UnsupportedOperationException | IOException e) {
+            // 不支援 POSIX 權限：改看 ACL
+        }
+        try {
+            java.nio.file.attribute.AclFileAttributeView v =
+                    Files.getFileAttributeView(p, java.nio.file.attribute.AclFileAttributeView.class);
+            if (v == null) return false;
+            for (java.nio.file.attribute.AclEntry e : v.getAcl()) {
+                if (e.type() != java.nio.file.attribute.AclEntryType.ALLOW) continue;
+                if (!e.permissions().contains(java.nio.file.attribute.AclEntryPermission.READ_DATA)) continue;
+                if (isBroadPrincipal(e.principal().getName())) return true;
+            }
+            return false;
+        } catch (UnsupportedOperationException | IOException | SecurityException e) {
             return false;
         }
+    }
+
+    /** Windows 的廣泛群組（任何登入者或匿名都屬於）；名稱可能帶網域前置，例如 BUILTIN\Users。 */
+    static boolean isBroadPrincipal(String name) {
+        if (name == null) return false;
+        String n = name.substring(name.lastIndexOf('\\') + 1).trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (n) {
+            case "everyone", "users", "authenticated users", "guests", "domain users", "interactive",
+                 "anonymous logon", "network" -> true;
+            default -> false;
+        };
     }
 
     private static String readLine(String prompt) throws IOException {

@@ -37,19 +37,73 @@ public final class Channel {
     private final Map<String, LinkedHashSet<String>> seenBySite = new LinkedHashMap<>();
     private final LinkedHashSet<String> legacySeen = new LinkedHashSet<>();
 
-    Channel(Store store, String id, Path dir) throws IOException {
+    Channel(Store store, String id, Path dir) throws IOException { this(store, id, dir, false); }
+
+    /** readOnly：唯讀模式的 Store 使用（v1.8.1），不建立資料夾、不補建缺少的檔案。 */
+    Channel(Store store, String id, Path dir, boolean readOnly) throws IOException {
         this.store = store;
         this.id = id;
         this.dir = dir;
-        Files.createDirectories(dir);
         propsFile = dir.resolve("channel.properties");
         sitesFile = dir.resolve("sites.tsv");
         keywordsFile = dir.resolve("keywords.txt");
         seenFile = dir.resolve("seen.txt");
+        retryFile = dir.resolve("fulltext-retry.tsv");
+        if (!readOnly) Files.createDirectories(dir);
         loadProps();
         loadSeen();
+        loadRetry();
+        if (readOnly) return;
         if (!Files.exists(sitesFile)) saveSites(List.of());
         if (!Files.exists(keywordsFile)) saveKeywords(List.of());
+    }
+
+    private void checkWritable() { store.checkWritable(); }
+
+    // ---------- 全文抓取失敗重試（v1.8.1，稽核 M3） ----------
+    private final Path retryFile;
+    /** 鍵：網站名稱<TAB>文章鍵值；值：{失敗次數, 第一次失敗時間}。 */
+    private final Map<String, long[]> fullTextFails = new LinkedHashMap<>();
+    /** 失敗紀錄保留天數（文章早已從來源消失時清除）。 */
+    static final int RETRY_KEEP_DAYS = 7;
+
+    /** 記錄一次全文抓取失敗，回傳累計失敗次數。 */
+    public synchronized int recordFullTextFailure(String site, String key) {
+        String k = norm(site) + "\t" + norm(key);
+        long[] v = fullTextFails.computeIfAbsent(k, x -> new long[]{0, System.currentTimeMillis()});
+        v[0]++;
+        return (int) v[0];
+    }
+
+    public synchronized void clearFullTextFailure(String site, String key) {
+        fullTextFails.remove(norm(site) + "\t" + norm(key));
+    }
+
+    public synchronized int fullTextFailures(String site, String key) {
+        long[] v = fullTextFails.get(norm(site) + "\t" + norm(key));
+        return v == null ? 0 : (int) v[0];
+    }
+
+    private void loadRetry() throws IOException {
+        if (!Files.exists(retryFile)) return;
+        for (String line : Files.readAllLines(retryFile, StandardCharsets.UTF_8)) {
+            String[] p = line.split("\t", -1);
+            if (p.length < 4) continue;
+            try {
+                fullTextFails.put(p[0] + "\t" + p[1], new long[]{Long.parseLong(p[2]), Long.parseLong(p[3])});
+            } catch (NumberFormatException ignored) {}
+        }
+    }
+
+    private void flushRetry() throws IOException {
+        long cutoff = System.currentTimeMillis() - RETRY_KEEP_DAYS * 86_400_000L;
+        fullTextFails.values().removeIf(v -> v[1] < cutoff);
+        if (fullTextFails.isEmpty()) { Files.deleteIfExists(retryFile); return; }
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, long[]> e : fullTextFails.entrySet()) {
+            sb.append(e.getKey()).append('\t').append(e.getValue()[0]).append('\t').append(e.getValue()[1]).append('\n');
+        }
+        Store.writeAtomic(retryFile, sb.toString());
     }
 
     public String id() { return id; }
@@ -129,6 +183,7 @@ public final class Channel {
     }
 
     public synchronized void saveProducts(List<ProductWatch> list) throws IOException {
+        checkWritable();
         StringBuilder sb = new StringBuilder("# name\tquery\tmustContain\tmaxPrice(0=none)\tenabled\n");
         for (ProductWatch w : list) sb.append(w.toLine()).append('\n');
         Store.writeAtomic(dir.resolve("products.tsv"), sb.toString());
@@ -230,6 +285,7 @@ public final class Channel {
     }
 
     public synchronized void flushProducts() throws IOException {
+        checkWritable();
         if (productPrices != null) {
             StringBuilder sb = new StringBuilder();
             for (Map.Entry<String, Integer> e : productPrices.entrySet()) {
@@ -428,6 +484,7 @@ public final class Channel {
     // ---------- 網站 ----------
     public synchronized List<Site> loadSites() throws IOException {
         List<Site> list = new ArrayList<>();
+        if (!Files.exists(sitesFile)) return list;
         for (String line : Files.readAllLines(sitesFile, StandardCharsets.UTF_8)) {
             if (line.isBlank() || line.startsWith("#")) continue;
             Site s = Site.fromLine(line);
@@ -437,6 +494,7 @@ public final class Channel {
     }
 
     public synchronized void saveSites(List<Site> sites) throws IOException {
+        checkWritable();
         StringBuilder sb = new StringBuilder("# name\turl\ttype(RSS|HTML)\tenabled\tfullText\n");
         for (Site s : sites) sb.append(s.toLine()).append('\n');
         Store.writeAtomic(sitesFile, sb.toString());
@@ -445,6 +503,7 @@ public final class Channel {
     // ---------- 關鍵字 ----------
     public synchronized List<String> loadKeywords() throws IOException {
         List<String> list = new ArrayList<>();
+        if (!Files.exists(keywordsFile)) return list;
         for (String line : Files.readAllLines(keywordsFile, StandardCharsets.UTF_8)) {
             String k = line.trim();
             if (!k.isEmpty() && !list.contains(k)) list.add(k);
@@ -453,6 +512,7 @@ public final class Channel {
     }
 
     public synchronized void saveKeywords(List<String> keywords) throws IOException {
+        checkWritable();
         Store.writeAtomic(keywordsFile, keywords.isEmpty() ? "" : String.join("\n", keywords) + "\n");
     }
 
@@ -538,18 +598,22 @@ public final class Channel {
     }
 
     public synchronized void flushSeen() throws IOException {
+        checkWritable();
         StringBuilder sb = new StringBuilder();
         for (String k : legacySeen) sb.append(k).append('\n');
         for (Map.Entry<String, LinkedHashSet<String>> e : seenBySite.entrySet()) {
             for (String k : e.getValue()) sb.append(e.getKey()).append('\t').append(k).append('\n');
         }
         Store.writeAtomic(seenFile, sb.toString());
+        flushRetry();
         saveProps();
     }
 
     public synchronized void clearSeen() throws IOException {
+        checkWritable();
         legacySeen.clear();
         seenBySite.clear();
+        fullTextFails.clear();
         props.stringPropertyNames().stream()
                 .filter(k -> k.startsWith("site.baseline.") || k.startsWith("product.baseline."))
                 .toList().forEach(props::remove);
@@ -575,6 +639,7 @@ public final class Channel {
     }
 
     synchronized void saveProps() throws IOException {
+        checkWritable();
         Path tmp = propsFile.resolveSibling(propsFile.getFileName() + ".tmp");
         try (Writer w = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
             props.store(w, "SecNewsMonitor channel");

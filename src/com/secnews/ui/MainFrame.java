@@ -317,7 +317,9 @@ public final class MainFrame extends JFrame {
         char[] o = oldPw.getPassword(), n1 = p1.getPassword(), n2 = p2.getPassword();
         try {
             if (!store.login(store.accountUser(), o)) {
-                JOptionPane.showMessageDialog(this, "目前密碼錯誤", "錯誤", JOptionPane.WARNING_MESSAGE);
+                long lock = store.loginLockRemainingMs();
+                JOptionPane.showMessageDialog(this, lock > 0 ? "密碼連續錯誤，請 " + (lock / 1000 + 1) + " 秒後再試" : "目前密碼錯誤",
+                        "錯誤", JOptionPane.WARNING_MESSAGE);
                 return;
             }
             String err = PasswordRules.check(n1, n2);

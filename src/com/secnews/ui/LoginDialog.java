@@ -10,8 +10,6 @@ import java.util.Arrays;
 
 /** 登入畫面。第一次啟動時改為「建立帳號」畫面。 */
 public final class LoginDialog extends JDialog {
-    private static final int MAX_FAILS = 5;
-    private static final long LOCK_MS = 60_000;
 
     private final Store store;
     private final boolean setupMode;
@@ -21,8 +19,6 @@ public final class LoginDialog extends JDialog {
     private final JLabel msg = new JLabel(" ");
     private final JButton okBtn;
     private boolean success;
-    private int fails;
-    private long lockedUntil;
 
     /** 重設帳號模式：建立新帳號成功時才清除舊帳號（v1.7.1）。 */
     private final boolean resetMode;
@@ -65,6 +61,15 @@ public final class LoginDialog extends JDialog {
         msg.setForeground(new Color(0xC62828));
         c.gridx = 0; c.gridy = 4; c.gridwidth = 2;
         form.add(msg, c);
+        // v1.8.1（稽核 M1）：最近 30 天內重設過帳號時提醒，讓擁有者發現帳號被別人換過
+        if (!setupMode && store.accountResetAt() > System.currentTimeMillis() - 30L * 86_400_000L) {
+            JLabel note = new JLabel("提醒：帳號於 " + store.accountResetDescription() + " 重設過");
+            note.setForeground(new Color(0x8D6E00));
+            c.gridy = 5;
+            form.add(note, c);
+        }
+        long lock = store.loginLockRemainingMs();
+        if (lock > 0) msg.setText("登入連續失敗，請 " + (lock / 1000 + 1) + " 秒後再試");
 
         okBtn = new JButton(setupMode ? "建立並登入" : "登入");
         JButton cancel = new JButton("離開");
@@ -104,8 +109,10 @@ public final class LoginDialog extends JDialog {
     }
 
     private void submit() {
-        if (System.currentTimeMillis() < lockedUntil) {
-            msg.setText("錯誤次數過多，請 " + ((lockedUntil - System.currentTimeMillis()) / 1000 + 1) + " 秒後再試");
+        // v1.8.1（稽核 M2）：鎖定狀態存在設定檔，關掉重開對話框或重開程式都有效，與命令列共用
+        long lock = setupMode ? 0 : store.loginLockRemainingMs();
+        if (lock > 0) {
+            msg.setText("錯誤次數過多，請 " + (lock / 1000 + 1) + " 秒後再試");
             return;
         }
         String user = userField.getText().trim();
@@ -126,7 +133,7 @@ public final class LoginDialog extends JDialog {
             @Override protected Boolean doInBackground() throws Exception {
                 try {
                     if (resetMode) {
-                        store.resetAndCreateAccount(user, pw);
+                        store.resetAndCreateAccount(user, pw, "畫面");
                         AppLog.info("帳號已重設（忘記密碼），Google Chat Webhook、LINE Token、Gmail 應用程式密碼已清除，需重新設定");
                         return true;
                     }
@@ -144,15 +151,12 @@ public final class LoginDialog extends JDialog {
                         AppLog.info("使用者 " + user + (setupMode ? " 建立帳號並登入" : " 登入成功"));
                         dispose();
                     } else {
-                        fails++;
                         passField.setText("");
-                        if (fails >= MAX_FAILS) {
-                            lockedUntil = System.currentTimeMillis() + LOCK_MS;
-                            fails = 0;
-                            msg.setText("錯誤次數過多，鎖定 60 秒");
-                            AppLog.info("登入失敗次數過多，暫時鎖定");
+                        long locked = store.loginLockRemainingMs();
+                        if (locked > 0) {
+                            msg.setText("錯誤次數過多，鎖定 " + (locked / 1000 + 1) + " 秒");
                         } else {
-                            msg.setText("帳號或密碼錯誤（剩餘 " + (MAX_FAILS - fails) + " 次）");
+                            msg.setText("帳號或密碼錯誤（剩餘 " + (Store.MAX_LOGIN_FAILS - store.loginFailCount()) + " 次）");
                         }
                     }
                 } catch (Exception ex) {

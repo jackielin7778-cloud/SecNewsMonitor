@@ -39,16 +39,62 @@ public final class Store {
     private volatile SecretKey sessionKey;
     private final List<Channel> channels = new ArrayList<>();
 
-    public Store() throws IOException {
+    /** 唯讀模式（v1.8.1）：不建立資料夾、不升級搬檔、不寫入任何檔案。 */
+    private final boolean readOnly;
+
+    public Store() throws IOException { this(false); }
+
+    private Store(boolean readOnly) throws IOException {
+        this.readOnly = readOnly;
         this.dir = resolveDir();
-        Files.createDirectories(dir);
-        restrictPermissions(dir);
         configFile = dir.resolve("config.properties");
         channelsDir = dir.resolve("channels");
         logsDir = dir.resolve("logs");
+        if (readOnly) {
+            loadConfig();
+            loadChannelsReadOnly();
+            return;
+        }
+        Files.createDirectories(dir);
+        restrictPermissions(dir);
         loadConfig();
         loadChannels();
         migrateLegacyLog();
+    }
+
+    /**
+     * 以唯讀方式開啟（v1.8.1，稽核 M5）：給「另一個執行個體正在執行」時的 --status 使用。
+     * 不會建立資料夾、不會轉移舊版設定、不會寫入任何檔案；任何寫入動作都會丟出 IllegalStateException。
+     */
+    public static Store openReadOnly() throws IOException { return new Store(true); }
+
+    public boolean isReadOnly() { return readOnly; }
+
+    void checkWritable() {
+        if (readOnly) throw new IllegalStateException("以唯讀方式開啟，不可寫入（另一個執行個體正在執行）");
+    }
+
+    /** 資料夾是否還需要由舊版格式升級（唯讀模式下不會進行升級）。 */
+    public boolean needsUpgrade() {
+        for (String f : new String[]{"sites.tsv", "keywords.txt", "seen.txt", "monitor.log"}) {
+            if (Files.exists(dir.resolve(f))) return true;
+        }
+        for (String k : config.stringPropertyNames()) {
+            if (k.startsWith("schedule.") || k.startsWith("chat.") || k.startsWith("site.baseline.")) return true;
+        }
+        return Files.isDirectory(dir) && channels.isEmpty();
+    }
+
+    private void loadChannelsReadOnly() throws IOException {
+        if (!Files.isDirectory(channelsDir)) return;
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        for (String id : config.getProperty("channels", "").split(",")) {
+            if (!id.isBlank() && Files.isDirectory(channelsDir.resolve(id.trim()))) ids.add(id.trim());
+        }
+        try (java.util.stream.Stream<Path> l = Files.list(channelsDir)) {
+            l.filter(Files::isDirectory).map(x -> x.getFileName().toString()).sorted().forEach(ids::add);
+        }
+        for (String id : ids) channels.add(new Channel(this, id, channelsDir.resolve(id), true));
     }
 
     /** v1.0 的單一 monitor.log 搬到 logs/，依最後修改日期命名，之後就會套用保留天數自動刪除。 */
@@ -126,6 +172,7 @@ public final class Store {
     }
 
     public synchronized void createAccount(String user, char[] password) throws IOException {
+        checkWritable();
         Pending p = prepareAccount(user, password);
         // v1.8.0：新帳號使用新的金鑰，頻道內既有的密文（例如上次重設帳號中途失敗留下的）一定無法解密，先清除
         for (Channel c : channels) c.clearSecrets();
@@ -140,6 +187,7 @@ public final class Store {
 
     private static Pending prepareAccount(String user, char[] password) {
         Pending p = new Pending();
+        p.values.setProperty("account.createdAt", String.valueOf(System.currentTimeMillis()));
         byte[] salt = Crypto.randomBytes(16);
         byte[] keySalt = Crypto.randomBytes(16);
         p.values.setProperty("account.user", user);
@@ -154,7 +202,7 @@ public final class Store {
 
     private void commitAccount(Pending p) throws IOException {
         Properties backup = (Properties) config.clone();
-        config.stringPropertyNames().stream().filter(k -> k.startsWith("account.")).toList().forEach(config::remove);
+        config.stringPropertyNames().stream().filter(k -> k.startsWith("account.") || k.startsWith("login.")).toList().forEach(config::remove);
         config.putAll(p.values);
         try {
             saveConfig();
@@ -163,6 +211,88 @@ public final class Store {
             throw e;
         }
         sessionKey = p.key;
+    }
+
+    /** 帳號建立時間（毫秒）；v1.8.1 以前建立的帳號沒有紀錄，回傳 0。 */
+    public synchronized long accountCreatedAt() { return longProp("account.createdAt"); }
+
+    /** 帳號上次重設的時間（毫秒）；沒有重設過回傳 0。 */
+    public synchronized long accountResetAt() { return longProp("account.resetAt"); }
+
+    /** 帳號上次重設的途徑與原帳號名稱（給登入畫面、--status 顯示）。 */
+    public synchronized String accountResetVia() { return config.getProperty("account.resetVia", ""); }
+    public synchronized String accountResetFrom() { return config.getProperty("account.resetFrom", ""); }
+
+    public static String formatTime(long ms) {
+        return java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+    }
+
+    /** 「2026-11-02 12:30，經由命令列，原帳號 admin」（v1.8.1，稽核 M1）。沒有重設過回傳空字串。 */
+    public synchronized String accountResetDescription() {
+        long t = accountResetAt();
+        if (t <= 0) return "";
+        StringBuilder sb = new StringBuilder(formatTime(t));
+        if (!accountResetVia().isEmpty()) sb.append("，經由").append(ChatText.oneLine(accountResetVia(), 20));
+        if (!accountResetFrom().isEmpty()) sb.append("，原帳號 ").append(ChatText.oneLine(accountResetFrom(), 40));
+        return sb.toString();
+    }
+
+    private long longProp(String k) {
+        try {
+            return Long.parseLong(config.getProperty(k, "0"));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    // ---------- 登入失敗鎖定（v1.8.1，稽核 M2：存在設定檔，畫面與命令列共用，重開程式也有效） ----------
+    /** 連續失敗幾次後鎖定。 */
+    public static final int MAX_LOGIN_FAILS = 5;
+    /** 第一次鎖定 60 秒，之後每次加倍，最長 15 分鐘；登入成功後歸零。 */
+    static final long LOCK_BASE_MS = 60_000, LOCK_MAX_MS = 15 * 60_000;
+
+    /** 目前還要鎖定多久（毫秒）；沒有鎖定回傳 0。 */
+    public synchronized long loginLockRemainingMs() {
+        long until = longProp("login.lockedUntil");
+        long now = System.currentTimeMillis();
+        if (until <= now) return 0;
+        return Math.min(until - now, LOCK_MAX_MS);       // 電腦時間被往回調時，最多鎖 15 分鐘
+    }
+
+    /** 目前連續失敗次數（給畫面顯示剩餘次數）。 */
+    public synchronized int loginFailCount() { return (int) longProp("login.fails"); }
+
+    private void recordLoginFailure() {
+        int fails = (int) longProp("login.fails") + 1;
+        if (fails >= MAX_LOGIN_FAILS) {
+            int lockouts = (int) longProp("login.lockouts");
+            long ms = Math.min(LOCK_MAX_MS, LOCK_BASE_MS << Math.min(lockouts, 10));
+            config.setProperty("login.lockedUntil", String.valueOf(System.currentTimeMillis() + ms));
+            config.setProperty("login.lockouts", String.valueOf(lockouts + 1));
+            config.remove("login.fails");
+            AppLog.info("[警告] 登入連續失敗 " + MAX_LOGIN_FAILS + " 次，鎖定 " + ms / 1000 + " 秒");
+        } else {
+            config.setProperty("login.fails", String.valueOf(fails));
+        }
+        saveConfigQuietly();
+    }
+
+    private void clearLoginFailures() {
+        boolean had = config.containsKey("login.fails") || config.containsKey("login.lockouts") || config.containsKey("login.lockedUntil");
+        config.remove("login.fails");
+        config.remove("login.lockouts");
+        config.remove("login.lockedUntil");
+        if (had) saveConfigQuietly();
+    }
+
+    private void saveConfigQuietly() {
+        if (readOnly) return;
+        try {
+            saveConfig();
+        } catch (IOException e) {
+            AppLog.error("寫入登入失敗紀錄失敗", e);
+        }
     }
 
     /** 加密金鑰的 PBKDF2 次數（v1.7.1 以前固定 210,000 次，未記錄在設定檔）。 */
@@ -174,17 +304,26 @@ public final class Store {
         }
     }
 
-    /** 驗證帳密；成功時同時推導出加密金鑰。 */
+    /**
+     * 驗證帳密；成功時同時推導出加密金鑰。
+     * v1.8.1：鎖定期間一律回傳 false（不驗證密碼）；呼叫端用 {@link #loginLockRemainingMs()} 判斷是否因鎖定而失敗。
+     */
     public synchronized boolean login(String user, char[] password) {
+        if (loginLockRemainingMs() > 0) return false;
         if (!hasAccount() || !accountUser().equals(user)) {
             // 帳號不符也跑一次 PBKDF2，讓回應時間一致
             Crypto.pbkdf2(password, new byte[16], Crypto.ITERATIONS, 256);
+            recordLoginFailure();
             return false;
         }
         byte[] salt = Crypto.unb64(config.getProperty("account.salt"));
         int it = Integer.parseInt(config.getProperty("account.iterations", String.valueOf(Crypto.LEGACY_ITERATIONS)));
         byte[] hash = Crypto.unb64(config.getProperty("account.hash"));
-        if (!Crypto.verify(password, salt, it, hash)) return false;
+        if (!Crypto.verify(password, salt, it, hash)) {
+            recordLoginFailure();
+            return false;
+        }
+        clearLoginFailures();
         sessionKey = Crypto.deriveKey(password, Crypto.unb64(config.getProperty("account.keySalt")), keyIterations());
         try {
             for (Channel c : channels) c.resolvePendingSecrets(sessionKey);     // 上次變更密碼中途中斷時的收尾
@@ -207,6 +346,7 @@ public final class Store {
      * 網站清單、關鍵字、排程、已讀紀錄、執行紀錄都保留。
      */
     public synchronized void resetAccount() throws IOException {
+        checkWritable();
         // v1.8.0：先清除各頻道的機密，最後才刪除帳號。中途失敗時帳號仍在（舊密碼可用），可以重做。
         for (Channel c : channels) c.clearSecrets();
         config.stringPropertyNames().stream()
@@ -221,7 +361,19 @@ public final class Store {
      * v1.8.0：先準備新帳號（驗證輸入），再清除各頻道機密，最後一次寫入新帳號；中途失敗時舊帳號仍在。
      */
     public synchronized void resetAndCreateAccount(String user, char[] password) throws IOException {
+        resetAndCreateAccount(user, password, "");
+    }
+
+    /**
+     * via：重設的途徑（例如「命令列」「畫面」），記錄在設定檔，之後登入畫面與 --status 會顯示（v1.8.1，稽核 M1）。
+     * 重設不需要舊密碼（忘記密碼時必須能重設）；重設會清除所有機密，所以不會洩漏機密，但能讓擁有者發現帳號被換過。
+     */
+    public synchronized void resetAndCreateAccount(String user, char[] password, String via) throws IOException {
+        checkWritable();
         Pending p = prepareAccount(user, password);
+        p.values.setProperty("account.resetAt", p.values.getProperty("account.createdAt"));
+        p.values.setProperty("account.resetFrom", config.getProperty("account.user", ""));
+        if (via != null && !via.isBlank()) p.values.setProperty("account.resetVia", via);
         for (Channel c : channels) c.clearSecrets();
         config.remove("chat.webhook.enc");
         commitAccount(p);
@@ -237,6 +389,7 @@ public final class Store {
      * 若在 2 之後、3 之前中斷：新密碼有效，下次登入時用新金鑰把暫存欄位換成正式欄位。
      */
     public synchronized void changePassword(char[] newPassword) throws IOException {
+        checkWritable();
         // 每個頻道的所有加密欄位（Webhook、LINE Token、Gmail 應用程式密碼）
         java.util.Map<Channel, java.util.Map<String, String>> secrets = new java.util.LinkedHashMap<>();
         for (Channel c : channels) {
@@ -254,6 +407,11 @@ public final class Store {
             if (!m.isEmpty()) secrets.put(c, m);
         }
         Pending p = prepareAccount(accountUser(), newPassword);
+        // 變更密碼不是新帳號：保留建立時間與重設紀錄（v1.8.1）
+        for (String k : new String[]{"account.createdAt", "account.resetAt", "account.resetVia", "account.resetFrom"}) {
+            String v = config.getProperty(k);
+            if (v != null) p.values.setProperty(k, v); else p.values.remove(k);
+        }
         for (java.util.Map.Entry<Channel, java.util.Map<String, String>> e : secrets.entrySet()) {
             for (java.util.Map.Entry<String, String> kv : e.getValue().entrySet()) {
                 e.getKey().stagePendingSecret(kv.getKey(), Crypto.encrypt(p.key, kv.getValue()));
@@ -288,6 +446,7 @@ public final class Store {
     }
 
     public synchronized Channel createChannel(String name, Channel.Type type) throws IOException {
+        checkWritable();
         if (name == null || name.isBlank()) throw new IllegalArgumentException("頻道名稱不可空白");
         if (channelNameExists(name, null)) throw new IllegalArgumentException("頻道名稱已存在：" + name.trim());
         int n = 1;
@@ -309,6 +468,7 @@ public final class Store {
 
     /** 刪除頻道（含網站、關鍵字、Webhook、已讀紀錄）。至少保留一個頻道。 */
     public synchronized void deleteChannel(Channel c) throws IOException {
+        checkWritable();
         if (channels.size() <= 1) throw new IllegalStateException("至少要保留一個頻道");
         if (!channels.remove(c)) return;
         saveChannelOrder();
@@ -443,6 +603,7 @@ public final class Store {
     }
 
     private void saveConfig() throws IOException {
+        checkWritable();
         Path tmp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
         try (Writer w = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
             config.store(w, "SecNewsMonitor");

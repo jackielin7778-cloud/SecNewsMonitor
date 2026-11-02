@@ -9,6 +9,8 @@ import java.util.List;
 public final class MonitorService {
     /** 全文比對：每次執行、每個網站最多抓幾篇內文。 */
     static final int MAX_FULLTEXT_PER_SITE = 30;
+    /** 同一篇文章內文連續抓取失敗幾次後放棄（v1.8.1）。 */
+    static final int MAX_FULLTEXT_RETRIES = 3;
     /** 全文比對：兩次抓取之間的間隔（毫秒），避免對網站造成負擔。 */
     static long fullTextDelayMs = 1000;
 
@@ -102,7 +104,7 @@ public final class MonitorService {
                     AppLog.info(tag + "  ✓ " + site.name + "：" + items.size() + " 則（首次執行，已建立基準）");
                     continue;
                 }
-                int titleHits = 0, fullHits = 0, fullFetched = 0, fullFailed = 0, deferred = 0, tooOld = 0;
+                int titleHits = 0, fullHits = 0, fullFetched = 0, fullFailed = 0, deferred = 0, tooOld = 0, gaveUp = 0;
                 for (FeedItem it : items) {
                     if (it.title.isEmpty()) continue;
                     if (ch.isSeen(site.name, it.key())) {
@@ -131,15 +133,29 @@ public final class MonitorService {
                     }
                     if (fullFetched > 0) Thread.sleep(fullTextDelayMs);
                     fullFetched++;
+                    String text;
                     try {
-                        String text = fetcher.fetchArticleText(it.link);
-                        List<String> fkw = matcher.matchText(text);
-                        if (!fkw.isEmpty()) {
-                            hits.add(new Hit(it, fkw, matcher.snippet(text, fkw.get(0), 40)));
-                            fullHits++;
-                        }
+                        text = fetcher.fetchArticleText(it.link);
+                    } catch (InterruptedException e) {
+                        throw e;
                     } catch (Exception e) {
+                        // v1.8.1（稽核 M3）：抓取失敗不標為已讀，下次執行再試；連續失敗 MAX_FULLTEXT_RETRIES 次才放棄
                         fullFailed++;
+                        int n = ch.recordFullTextFailure(site.name, it.key());
+                        if (n >= MAX_FULLTEXT_RETRIES) {
+                            ch.clearFullTextFailure(site.name, it.key());
+                            ch.markSeen(site.name, it.key());
+                            gaveUp++;
+                            AppLog.info(tag + "  [警告] " + site.name + "：內文連續 " + n + " 次抓取失敗，不再比對："
+                                    + ChatText.oneLine(it.title, 80) + "（" + ChatText.oneLine(String.valueOf(e.getMessage()), 120) + "）");
+                        }
+                        continue;
+                    }
+                    ch.clearFullTextFailure(site.name, it.key());
+                    List<String> fkw = matcher.matchText(text);
+                    if (!fkw.isEmpty()) {
+                        hits.add(new Hit(it, fkw, matcher.snippet(text, fkw.get(0), 40)));
+                        fullHits++;
                     }
                     ch.markSeen(site.name, it.key());
                 }
@@ -150,7 +166,8 @@ public final class MonitorService {
                 StringBuilder msg = new StringBuilder("  ✓ " + site.name + "：" + items.size() + " 則，標題命中 " + titleHits + " 則");
                 if (site.fullText) {
                     msg.append("；全文比對 ").append(fullFetched).append(" 篇、命中 ").append(fullHits).append(" 則");
-                    if (fullFailed > 0) msg.append("、抓取失敗 ").append(fullFailed).append(" 篇");
+                    if (fullFailed > 0) msg.append("、抓取失敗 ").append(fullFailed).append(" 篇")
+                            .append(fullFailed > gaveUp ? "（" + (fullFailed - gaveUp) + " 篇下次重試）" : "");
                     if (deferred > 0) msg.append("、").append(deferred).append(" 篇留待下次");
                 }
                 if (tooOld > 0) msg.append("；略過超過 ").append(cfg.maxAgeDays).append(" 天的舊文章 ").append(tooOld).append(" 則");
